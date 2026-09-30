@@ -4,6 +4,7 @@
   "grokName": "Grok",
 
   "screen": "",
+  "placement": "below",
   "greetOnStart": true,
 
   "projectDirs": ["~/Projects/*"],

@@ -68,6 +68,11 @@ Item {
   // ------------------------------------------------------------------ knobs
   // Defaults; override them in config.json rather than here.
   property string screenName: opt("screen", "")          // monitor name (hyprctl monitors); "" = first screen
+  // "below": hangs under the bar (works with any layout).
+  // "bar":   lives inside the bar like a Mac notch and only drops over
+  //          windows when it opens — needs an empty bar center section.
+  property string placement: opt("placement", "below")
+  readonly property bool inBar: placement === "bar"
   property real topOffset: Style.bar.sizeHorizontal
   property int sleepAfter: opt("sleepAfter", 600)        // s idle before an orb dozes off
   property int doneGlow: opt("doneGlow", 90)             // s a finished agent stays happy
@@ -86,7 +91,7 @@ Item {
   readonly property string backend: Quickshell.env("AGENT_NOTCH_BACKEND") || home + "/.local/bin/myzk-agents"
 
   readonly property int collapsedW: 300
-  readonly property int collapsedH: 34
+  readonly property int collapsedH: inBar ? Style.bar.sizeHorizontal : 34
   readonly property int expandedW: 680
   readonly property int alertW: 600
   readonly property int greetW: 560
@@ -547,6 +552,9 @@ Item {
         readonly property real r: 12
         width: r; height: r
         y: root.topOffset
+        // In the bar the collapsed notch has no drip; the ears only join the
+        // bar's edge once it opens past it.
+        visible: !root.inBar || (root.mode !== "collapsed" && notch.height > root.topOffset + 6)
         x: index === 0 ? notch.x - r : notch.x + notch.width
         onPaint: {
           var ctx = getContext("2d")
@@ -570,7 +578,7 @@ Item {
     Rectangle {
       id: notch
       anchors.horizontalCenter: parent.horizontalCenter
-      y: root.topOffset
+      y: root.inBar ? 0 : root.topOffset
       width: root.mode === "expanded" ? root.expandedW
         : root.mode === "alert" ? root.alertW
         : root.mode === "greet" ? root.greetW
@@ -584,7 +592,7 @@ Item {
       color: root.notchColor
       topLeftRadius: 0
       topRightRadius: 0
-      bottomLeftRadius: root.mode === "collapsed" ? root.collapsedH / 2 : 30
+      bottomLeftRadius: root.mode === "collapsed" ? (root.inBar ? 10 : root.collapsedH / 2) : 30
       bottomRightRadius: bottomLeftRadius
       clip: true
 
@@ -626,9 +634,9 @@ Item {
         AgentFace {
           id: mainOrb
           anchors.left: parent.left
-          anchors.leftMargin: 18
+          anchors.leftMargin: root.inBar ? 14 : 18
           anchors.verticalCenter: parent.verticalCenter
-          size: 21
+          size: root.inBar ? 17 : 21
           glowAlways: true
           tint: root.orbTint("claude", "")
           mood: root.mainClaudeData ? root.moodFor(root.mainClaudeData.state, root.mainClaudeData.updated) : "sleep"
@@ -643,7 +651,7 @@ Item {
 
         Grid {
           anchors.right: parent.right
-          anchors.rightMargin: 18
+          anchors.rightMargin: root.inBar ? 14 : 18
           anchors.verticalCenter: parent.verticalCenter
           columns: 2
           spacing: 2
@@ -657,7 +665,7 @@ Item {
               required property real updated
               visible: root.clusterKeys.indexOf(key) >= 0
               mini: true
-              size: 12
+              size: root.inBar ? 10 : 12
               tint: root.idColor(agent, ident)
               mood: root.moodFor(state, updated)
             }
