@@ -5,7 +5,7 @@ A dynamic-island style notch that hangs under the Omarchy bar and shows, live, w
 work, wait for you, celebrate when done and shake on errors. You can also ask Claude something
 straight from the notch.
 
-https://github.com/GNSB/omarchy-agent-notch/raw/main/assets/demo.mp4
+▶️ **[Watch the demo](assets/demo.mp4)**
 
 ## Features
 
