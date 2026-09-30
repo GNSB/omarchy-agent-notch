@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+"""myzk-agents — live "what is each agent doing" board for the Omarchy notch.
+
+State lives in ~/.local/state/myzk-agents/summary.json, which the
+myzk.notch overlay watches. Writers:
+
+  myzk-agents claude-hook          Claude Code hook (reads hook JSON on stdin)
+  myzk-agents mcp                  stdio MCP server; Grok Bots call report_status
+  myzk-agents set AGENT ID STATE [--name N] [--task T] [--detail D]
+  myzk-agents rm AGENT ID
+  myzk-agents ask PROMPT [--resume SID | --id NEW_UUID]   run Claudi headless (notch input)
+
+Readers:
+  myzk-agents list                 one-shot table
+  myzk-agents watch                live table in the terminal
+
+Nothing here connects agents to each other; it only records what each one
+says it is doing.
+"""
+import fcntl
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+
+STATE_DIR = os.path.join(
+    os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "myzk-agents"
+)
+SUMMARY = os.path.join(STATE_DIR, "summary.json")
+LOCK = os.path.join(STATE_DIR, ".lock")
+
+STATES = ("idle", "thinking", "working", "waiting", "done", "error")
+ACTIVE = ("thinking", "working", "waiting")
+
+# Finished or idle entries fade out after this; anything silent for MAX_AGE
+# is assumed dead (crashed session, bot that never said "done").
+IDLE_TTL = 2 * 3600
+MAX_AGE = 8 * 3600
+
+
+# ---------------------------------------------------------------- store
+
+def _load():
+    try:
+        with open(SUMMARY) as f:
+            return json.load(f).get("agents", {})
+    except (OSError, ValueError):
+        return {}
+
+
+def _save(agents):
+    now = time.time()
+    agents = {
+        k: a for k, a in agents.items()
+        if now - a.get("updated", 0) < (MAX_AGE if a.get("state") in ACTIVE else IDLE_TTL)
+    }
+    tmp = SUMMARY + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"updated": now, "agents": agents}, f, ensure_ascii=False)
+    os.replace(tmp, SUMMARY)
+
+
+def update(agent, ident, state=None, remove=False, **fields):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(LOCK, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        agents = _load()
+        key = f"{agent}:{ident}"
+        if remove:
+            agents.pop(key, None)
+        else:
+            now = time.time()
+            entry = agents.get(key, {"agent": agent, "id": ident, "since": now})
+            if state and state != entry.get("state"):
+                entry["since"] = now
+                entry["state"] = state
+            for k, v in fields.items():
+                if v is not None:
+                    entry[k] = v
+            entry["updated"] = now
+            agents[key] = entry
+        _save(agents)
+
+
+# ---------------------------------------------------------- claude hook
+
+TOOL_VERBS = {
+    "Bash": "Ejecutando", "Edit": "Editando", "Write": "Escribiendo",
+    "Read": "Leyendo", "NotebookEdit": "Editando", "Grep": "Buscando",
+    "Glob": "Buscando", "WebFetch": "Web", "WebSearch": "Buscando en web",
+    "Agent": "Subagente", "Skill": "Skill", "TodoWrite": "Planificando",
+}
+
+
+def _short(s, n=70):
+    s = " ".join(str(s).split())
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _tool_detail(tool, inp):
+    inp = inp or {}
+    if tool == "Bash":
+        arg = inp.get("description") or inp.get("command", "")
+    elif tool in ("Edit", "Write", "Read", "NotebookEdit"):
+        arg = os.path.basename(inp.get("file_path") or inp.get("notebook_path") or "")
+    elif tool in ("Grep", "Glob"):
+        arg = inp.get("pattern", "")
+    elif tool == "WebFetch":
+        arg = inp.get("url", "")
+    elif tool == "WebSearch":
+        arg = inp.get("query", "")
+    elif tool == "Agent":
+        arg = inp.get("description", "")
+    elif tool == "Skill":
+        arg = inp.get("skill", "")
+    else:
+        arg = ""
+    if tool.startswith("mcp__"):
+        parts = tool.split("__")
+        return _short(f"{parts[1]}: {parts[-1]}")
+    verb = TOOL_VERBS.get(tool, tool)
+    return _short(f"{verb} {arg}".strip())
+
+
+def claude_hook():
+    try:
+        ev = json.load(sys.stdin)
+    except ValueError:
+        return
+    sid = ev.get("session_id") or "?"
+    cwd = ev.get("cwd") or os.getcwd()
+    name = os.path.basename(cwd.rstrip("/")) or cwd
+    kind = ev.get("hook_event_name", "")
+    common = {"name": name, "cwd": cwd}
+
+    if kind == "SessionEnd":
+        # Notch tasks outlive their process: the ask runner writes the answer.
+        if _load().get(f"claude:{sid}", {}).get("source") != "notch":
+            update("claude", sid, remove=True)
+    elif kind == "SessionStart":
+        update("claude", sid, "idle", detail="Sesión abierta", **common)
+    elif kind == "UserPromptSubmit":
+        # Pasted blocks arrive wrapped in <pasted_content id=…> tags; show the text.
+        prompt = re.sub(r"</?pasted_content[^>]*>", " ", ev.get("prompt", ""))
+        prompt = _short(prompt, 90) or "…"
+        update("claude", sid, "thinking", task=prompt, detail="Pensando…", **common)
+    elif kind == "PreToolUse":
+        update("claude", sid, "working",
+               detail=_tool_detail(ev.get("tool_name", ""), ev.get("tool_input")), **common)
+    elif kind == "PostToolUse":
+        update("claude", sid, "thinking", detail="Pensando…", **common)
+    elif kind in ("Notification", "PermissionRequest"):
+        msg = ev.get("message") or "Esperando tu permiso"
+        update("claude", sid, "waiting", detail=_short(msg), **common)
+    elif kind == "Stop":
+        update("claude", sid, "done", detail="Listo, esperando tu próximo mensaje", **common)
+
+
+# ------------------------------------------------------------ mcp server
+
+MCP_TOOLS = [{
+    "name": "report_status",
+    "description": (
+        "Report what you are doing right now to the user's desktop status bar. "
+        "Call it when you start a task, at each meaningful step, when you need "
+        "the user, and when you finish or fail. It only displays status; it "
+        "never changes anything else."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "bot": {"type": "string", "description": "Your bot's name, always the same."},
+            "state": {
+                "type": "string",
+                "enum": ["working", "waiting", "done", "error", "idle", "off"],
+                "description": "working = busy; waiting = needs the user; done/error = "
+                               "finished; idle = nothing to do; off = remove from the bar.",
+            },
+            "task": {"type": "string", "description": "The overall task, short."},
+            "detail": {"type": "string", "description": "The current step, short."},
+        },
+        "required": ["bot", "state"],
+    },
+}]
+
+
+def _mcp_call(args):
+    bot = _short(args.get("bot") or "grok", 40)
+    state = args.get("state", "working")
+    if state == "off":
+        update("grok", bot, remove=True)
+        return "Removed from status bar."
+    if state not in STATES:
+        state = "working"
+    update("grok", bot, state, name=bot,
+           task=_short(args["task"], 90) if args.get("task") else None,
+           detail=_short(args["detail"]) if args.get("detail") else None)
+    return f"Status shown: {bot} → {state}."
+
+
+def mcp_server():
+    def send(msg):
+        sys.stdout.write(json.dumps(msg) + "\n")
+        sys.stdout.flush()
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except ValueError:
+            continue
+        method, rid = req.get("method"), req.get("id")
+        if rid is None:
+            continue  # notifications (initialized, cancelled, …)
+        if method == "initialize":
+            result = {
+                "protocolVersion": req.get("params", {}).get("protocolVersion", "2025-06-18"),
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "myzk-agents", "version": "1.0.0"},
+            }
+        elif method == "tools/list":
+            result = {"tools": MCP_TOOLS}
+        elif method == "tools/call":
+            p = req.get("params", {})
+            if p.get("name") != "report_status":
+                send({"jsonrpc": "2.0", "id": rid,
+                      "error": {"code": -32602, "message": "Unknown tool"}})
+                continue
+            try:
+                text, err = _mcp_call(p.get("arguments") or {}), False
+            except Exception as e:  # never kill the server over one bad call
+                text, err = f"Failed: {e}", True
+            result = {"content": [{"type": "text", "text": text}], "isError": err}
+        elif method == "ping":
+            result = {}
+        else:
+            send({"jsonrpc": "2.0", "id": rid,
+                  "error": {"code": -32601, "message": f"Method not found: {method}"}})
+            continue
+        send({"jsonrpc": "2.0", "id": rid, "result": result})
+
+
+# ------------------------------------------------------------------ ask
+
+NOTCH_PROMPT = (
+    "Estás respondiendo desde el notch del escritorio Omarchy del usuario (una "
+    "tarjeta pequeña). Responde en español, claro y breve (idealmente menos de "
+    "12 líneas), en markdown simple. Si hiciste cambios, di cuáles en una línea."
+)
+
+
+def _claude_bin():
+    return shutil.which("claude") or os.path.expanduser(
+        "~/.local/share/mise/installs/claude/latest/claude")
+
+
+def ask(prompt, resume=None, new_id=None):
+    sid = resume or new_id or str(uuid.uuid4())
+    cwd = os.path.expanduser(os.environ.get("MYZK_NOTCH_CWD", "~"))
+    update("claude", sid, "thinking", name=_short(prompt, 22), cwd=cwd, source="notch",
+           task=_short(prompt, 90), detail="Pensando…", answer="")
+
+    # Detach twice so the notch never waits on (or kills) the run.
+    if os.fork():
+        return
+    os.setsid()
+    if os.fork():
+        os._exit(0)
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
+
+    args = [_claude_bin(), "-p", prompt, "--output-format", "json",
+            "--permission-mode", "auto", "--append-system-prompt", NOTCH_PROMPT]
+    args += ["--resume", sid] if resume else ["--session-id", sid, "-n", "Notch"]
+    log = os.path.join(STATE_DIR, "ask.log")
+    try:
+        out = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=3600)
+        # mise may print a banner first; the result is the last JSON line.
+        line = next((l for l in reversed(out.stdout.splitlines()) if l.startswith("{")), "{}")
+        data = json.loads(line)
+        answer = str(data.get("result") or "").strip() or "Sin respuesta"
+        # Drop "🔊 …" spoken-summary lines (for TTS hooks), not for the card.
+        answer = "\n".join(l for l in answer.splitlines() if not l.startswith("🔊")).strip() or answer
+        failed = bool(data.get("is_error")) or out.returncode != 0 or not data
+        if failed:
+            with open(log, "a") as f:
+                f.write(f"--- {time.ctime()} rc={out.returncode}\n{out.stdout[-2000:]}\n{out.stderr[-2000:]}\n")
+        real = data.get("session_id")
+        if real and real != sid:  # resumed runs may fork a new id
+            update("claude", sid, remove=True)
+            sid = real
+    except Exception as e:  # timeout, missing binary…
+        answer, failed = f"No pude completar la tarea: {e}", True
+    first = next((l for l in answer.splitlines() if l.strip()), answer)
+    first = re.sub(r"[*_`#>]+", "", first).strip()
+    update("claude", sid, "error" if failed else "done", source="notch", name=_short(prompt, 22),
+           cwd=cwd, answer=answer[:8000], detail=_short(first.lstrip("#*- ")))
+    os._exit(0)
+
+
+# ----------------------------------------------------------------- views
+
+LABEL = {"claude": "✻ Claudi", "grok": "◆ Grok"}
+STATE_ES = {"idle": "en espera", "thinking": "pensando", "working": "trabajando",
+            "waiting": "te necesita", "done": "terminó", "error": "error"}
+COLOR = {"idle": "90", "thinking": "36", "working": "32", "waiting": "33;1",
+         "done": "34", "error": "31;1"}
+
+
+def _ago(t):
+    s = int(time.time() - t)
+    return f"{s}s" if s < 60 else f"{s // 60}m" if s < 3600 else f"{s // 3600}h{s % 3600 // 60:02d}"
+
+
+def render():
+    agents = sorted(_load().values(),
+                    key=lambda a: (a.get("state") not in ACTIVE, -a.get("updated", 0)))
+    if not agents:
+        return "  (ningún agente activo)\n"
+    out = []
+    for a in agents:
+        st = a.get("state", "idle")
+        head = f"{LABEL.get(a['agent'], a['agent'])} · {a.get('name', a['id'])}"
+        out.append(f"\033[1m{head}\033[0m  \033[{COLOR.get(st, '0')}m● "
+                   f"{STATE_ES.get(st, st)}\033[0m  \033[90m{_ago(a.get('since', 0))}\033[0m")
+        if a.get("task"):
+            out.append(f"   tarea: {a['task']}")
+        if a.get("detail"):
+            out.append(f"   ahora: {a['detail']}")
+        out.append("")
+    return "\n".join(out)
+
+
+def watch():
+    try:
+        while True:
+            sys.stdout.write("\033[H\033[2J\033[1mAgentes\033[0m  "
+                             f"\033[90m{time.strftime('%H:%M:%S')} · q/Ctrl+C para salir\033[0m\n\n")
+            sys.stdout.write(render())
+            sys.stdout.flush()
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+
+
+def main():
+    args = sys.argv[1:]
+    cmd = args[0] if args else "list"
+    try:
+        if cmd == "claude-hook":
+            claude_hook()
+        elif cmd == "mcp":
+            mcp_server()
+        elif cmd == "watch":
+            watch()
+        elif cmd == "ask" and len(args) >= 2:
+            opts = dict(zip(args[2::2], args[3::2]))
+            ask(args[1], opts.get("--resume"), opts.get("--id"))
+        elif cmd == "list":
+            sys.stdout.write(render())
+        elif (cmd == "set" and len(args) >= 4) or (cmd == "rm" and len(args) >= 3):
+            agent, ident = args[1], args[2]
+            if cmd == "rm":
+                update(agent, ident, remove=True)
+            else:
+                opts = dict(zip(args[4::2], args[5::2]))
+                update(agent, ident, args[3],
+                       name=opts.get("--name"), task=opts.get("--task"),
+                       detail=opts.get("--detail"))
+        else:
+            print(__doc__)
+            return 1
+    except Exception as e:
+        # A status board must never break the agent it is watching.
+        if cmd == "claude-hook":
+            return 0
+        print(f"myzk-agents: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

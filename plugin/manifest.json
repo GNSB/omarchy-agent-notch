@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "myzk.notch",
+  "name": "Agent notch",
+  "version": "1.0.0",
+  "author": "myzk",
+  "description": "Dynamic-island style notch showing what Claude Code sessions and Grok Bots are doing, fed by ~/.local/bin/myzk-agents",
+  "keywords": ["claude", "grok", "agents", "notch", "status"],
+  "kinds": ["overlay"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Notch.qml"
+  }
+}
