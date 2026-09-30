@@ -8,6 +8,9 @@ Rectangle {
   property color c: "#AAAAAA"
   property string label: ""
   property string mood: "idle"
+  property string faceStyle: "orb"
+  property var accessory: []
+  property string forceReaction: ""
   property bool focused: false
   property string fontFamily: "Noto Sans"
   property bool live: true
@@ -34,6 +37,9 @@ Rectangle {
     size: 21
     tint: chip.c
     mood: chip.mood
+    faceStyle: chip.faceStyle
+    accessory: chip.accessory
+    forceReaction: chip.forceReaction
     live: chip.live && chip.opacity > 0.01
   }
 

@@ -14,11 +14,62 @@ import qs.Commons
 //              per agent; clicking a chip focuses it
 //   alert      peeks open by itself when an agent needs you, finishes or
 //              fails: tinted glow card + stacked faces; click to dismiss
+//   custom     face customisation panel (style, head gear, colour) with a
+//              live preview; writes straight to config.json
 //
 // Data: ~/.local/state/myzk-agents/summary.json, written by myzk-agents
 // (Claude Code hooks + Grok Bots reporting via `myzk-agents set`).
 Item {
   id: root
+
+  // A toggle pill for the customisation panel, optionally with a tiny face.
+  component OptPill: Rectangle {
+    id: pill
+    property bool on: false
+    property string label: ""
+    property bool face: false
+    property string faceStyleName: "orb"
+    property var gear: []
+    property color faceTint: "#EEF2F7"
+    signal picked()
+    height: 30
+    width: pillRow.implicitWidth + 22
+    radius: 15
+    color: on ? Qt.alpha(root.claudeColor, 0.22) : pillMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.12) : Qt.rgba(1, 1, 1, 0.06)
+    border.width: 1
+    border.color: on ? Qt.alpha(root.claudeColor, 0.8) : Qt.rgba(1, 1, 1, 0.05)
+    Behavior on color { ColorAnimation { duration: 150 } }
+    Row {
+      id: pillRow
+      anchors.centerIn: parent
+      spacing: 7
+      AgentFace {
+        visible: pill.face
+        anchors.verticalCenter: parent.verticalCenter
+        size: 17
+        mini: true
+        interactive: false
+        live: false
+        tint: pill.faceTint
+        faceStyle: pill.faceStyleName
+        accessory: pill.gear
+      }
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        text: pill.label
+        color: pill.on ? "white" : "#C9CDD4"
+        font.family: root.fontFamily
+        font.pixelSize: 12
+      }
+    }
+    MouseArea {
+      id: pillMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: pill.picked()
+    }
+  }
 
   // Injected by the shell host.
   property string omarchyPath: Quickshell.env("OMARCHY_PATH")
@@ -48,6 +99,7 @@ Item {
   }
 
   FileView {
+    id: cfgFile
     path: root.configPath
     watchChanges: true
     printErrors: false
@@ -88,6 +140,14 @@ Item {
   property string terminalCmd: opt("terminal", "xdg-terminal-exec --app-id=org.omarchy.terminal")
   property string claudeCmd: opt("claudeCommand", "claude")
   property bool greetOnStart: opt("greetOnStart", true)
+  // Face design: "orb", "cat", "dog" or "hamster". grokFaceStyle overrides it for Grok Bots.
+  property string faceStyle: opt("faceStyle", "orb")
+  property string grokFaceStyle: opt("grokFaceStyle", faceStyle)
+  // Head gear: a name or list (hat, cowboy, crown, party, bow, headphones, helmet,
+  // mask, glasses, shades). "accessories" maps a bot name to its own.
+  property var accessory: opt("accessory", [])
+  property var grokAccessory: opt("grokAccessory", accessory)
+  property var accessories: opt("accessories", ({}))
   readonly property string backend: Quickshell.env("AGENT_NOTCH_BACKEND") || home + "/.local/bin/myzk-agents"
 
   readonly property int collapsedW: 300
@@ -108,17 +168,17 @@ Item {
   property int nextColor: 0
   readonly property var stateText: {
     var m = {}
-    ;["idle", "thinking", "working", "waiting", "done", "error", "sleep", "errorStale"]
+    ;["idle", "thinking", "working", "upload", "restart", "waiting", "done", "error", "sleep", "errorStale"]
       .forEach(function (k) { m[k] = root.tr("state." + k) })
     return m
   }
   readonly property var stateColor: ({
     "idle": "#8B93A1", "thinking": "#A78BFA", "working": "#5B9DFF",
     "waiting": "#F5B544", "done": "#3DD68C", "error": "#FF6B6B", "sleep": "#6B7280",
-    "errorStale": "#FF6B6B"
+    "errorStale": "#FF6B6B", "upload": "#3CC8E0", "restart": "#E879F9"
   })
   readonly property var rank: ({
-    "waiting": 6, "error": 5, "errorStale": 1.5, "working": 4, "thinking": 3, "done": 2, "idle": 1, "sleep": 0
+    "waiting": 6, "error": 5, "errorStale": 1.5, "working": 4, "upload": 4, "restart": 3, "thinking": 3, "done": 2, "idle": 1, "sleep": 0
   })
 
   // ------------------------------------------------------------------ state
@@ -166,7 +226,50 @@ Item {
   property bool greetWave: false
   property string greetMood: "sleep"
 
+  // Customisation panel.
+  property bool customOpen: false
+  property string customTarget: "claude"      // claude | grok
+  property int previewMoodIndex: 0
+  readonly property int customW: 680
+  readonly property var previewMoods: ["idle", "thinking", "working", "upload", "restart",
+    "waiting", "done", "error", "sleep"]
+  readonly property var gearNames: ["hat", "cowboy", "crown", "party", "helmet", "bow",
+    "headphones", "mask", "glasses", "shades"]
+  // One item per group: a single hat, a single thing over the eyes.
+  readonly property var gearGroup: ({ "hat": "head", "cowboy": "head", "crown": "head", "party": "head",
+    "helmet": "head", "mask": "eyes", "glasses": "eyes", "shades": "eyes" })
+  function asList(v) { return Array.isArray(v) ? v : v ? [v] : [] }
+  readonly property string customStyle: customTarget === "claude" ? faceStyle : grokFaceStyle
+  readonly property var customGear: asList(customTarget === "claude" ? accessory : grokAccessory)
+
+  function openCustom() {
+    root.inputOpen = false
+    root.answerKey = ""
+    root.pinned = false
+    root.customOpen = true
+  }
+  // Writes one key to config.json; the file watcher then reloads it.
+  function saveOpt(key, value) {
+    var c = JSON.parse(JSON.stringify(root.cfg || {}))
+    c[key] = value
+    root.cfg = c
+    cfgFile.setText(JSON.stringify(c, null, 2) + "\n")
+  }
+  function setCustomStyle(st) { saveOpt(customTarget === "claude" ? "faceStyle" : "grokFaceStyle", st) }
+  function toggleGear(n) {
+    var cur = root.customGear.slice(), i = cur.indexOf(n)
+    if (n === "") cur = []
+    else if (i >= 0) cur.splice(i, 1)
+    else {
+      var g = root.gearGroup[n]
+      if (g) cur = cur.filter(function (x) { return root.gearGroup[x] !== g })
+      cur.push(n)
+    }
+    saveOpt(customTarget === "claude" ? "accessory" : "grokAccessory", cur)
+  }
+
   readonly property string mode: greeting ? "greet"
+    : customOpen ? "custom"
     : inputOpen ? "input"
     : answerData ? "answer"
     : (hovered || pinned) && count > 0 ? "expanded"
@@ -257,6 +360,7 @@ Item {
     if (state === "done") return age < root.doneGlow ? "done" : (age > root.sleepAfter ? "sleep" : "idle")
     if (state === "idle") return age > root.sleepAfter ? "sleep" : "idle"
     if (state === "error" && age > root.errorLoud) return "errorStale"
+    if (state === "restart" && age > 8) return "idle"
     return state || "idle"
   }
 
@@ -270,6 +374,15 @@ Item {
   }
 
   // Big orbs are pale like the reel's, warmed or cooled by the agent's colour.
+  property string forceReaction: ""
+  Timer { id: reactReset; interval: 200; onTriggered: root.forceReaction = "" }
+
+  function accessoryFor(agent, ident) {
+    if (ident && root.accessories[ident] !== undefined) return root.accessories[ident]
+    return agent === "claude" ? root.accessory : root.grokAccessory
+  }
+  function faceStyleFor(agent) { return agent === "claude" ? root.faceStyle : root.grokFaceStyle }
+
   function orbTint(agent, ident) {
     return Qt.tint("#EEF2F7", Qt.alpha(root.idColor(agent, ident), agent === "claude" ? 0.28 : 0.16))
   }
@@ -375,7 +488,7 @@ Item {
 
     var parts = []
     moodCount.error = (moodCount.error || 0) + (moodCount.errorStale || 0)
-    ;["waiting", "error", "working", "thinking", "done", "idle", "sleep"].forEach(function (m) {
+    ;["waiting", "error", "working", "upload", "restart", "thinking", "done", "idle", "sleep"].forEach(function (m) {
       if (moodCount[m]) parts.push(moodCount[m] + " " + root.stateText[m])
     })
     root.grokSummary = parts.slice(0, 2).join(" · ")
@@ -401,6 +514,8 @@ Item {
     function grok(): void { if (!root.pinned) root.pinned = true; root.grokOpen = !root.grokOpen }
     function ask(): void { root.openInput() }
     function greet(): void { root.greet() }
+    // Play a reaction on every visible face: annoyed | dizzy
+    function react(kind: string): void { root.forceReaction = ""; root.forceReaction = kind; reactReset.restart() }
     function demo(on: bool): void {
       agentModel.clear()
       root.lastStates = {}
@@ -410,7 +525,8 @@ Item {
       root.pickedKey = ""; root.alertKey = ""; root.answerKey = ""
       root.demoMode = on
     }
-    function close(): void { root.closeInput(); root.answerKey = ""; root.pinned = false }
+    function customize(): void { root.openCustom() }
+    function close(): void { root.customOpen = false; root.closeInput(); root.answerKey = ""; root.pinned = false }
     // Opens the most recent notch conversation.
     function last(): void {
       var best = "", t = 0
@@ -583,11 +699,13 @@ Item {
         : root.mode === "alert" ? root.alertW
         : root.mode === "greet" ? root.greetW
         : root.mode === "input" ? root.inputW
+        : root.mode === "custom" ? root.customW
         : root.mode === "answer" ? root.answerW : root.collapsedW
       height: root.mode === "expanded" ? expanded.implicitHeight + root.pad * 2
         : root.mode === "alert" ? root.alertH
         : root.mode === "greet" ? 136
         : root.mode === "input" ? inputView.cardH + root.pad * 2
+        : root.mode === "custom" ? customView.cardH + root.pad * 2
         : root.mode === "answer" ? answerView.height + root.pad * 2 : root.collapsedH
       color: root.notchColor
       topLeftRadius: 0
@@ -639,6 +757,9 @@ Item {
           size: root.inBar ? 17 : 21
           glowAlways: true
           tint: root.orbTint("claude", "")
+          faceStyle: root.faceStyleFor("claude")
+          accessory: root.accessoryFor("claude", "")
+          forceReaction: root.forceReaction
           mood: root.mainClaudeData ? root.moodFor(root.mainClaudeData.state, root.mainClaudeData.updated) : "sleep"
         }
 
@@ -667,6 +788,9 @@ Item {
               mini: true
               size: root.inBar ? 10 : 12
               tint: root.idColor(agent, ident)
+              faceStyle: root.faceStyleFor(agent)
+              accessory: root.accessoryFor(agent, ident)
+              forceReaction: root.forceReaction
               mood: root.moodFor(state, updated)
             }
           }
@@ -708,6 +832,9 @@ Item {
             size: 62
             glowAlways: true
             tint: focusCard.d ? root.orbTint(focusCard.d.agent, focusCard.d.ident) : "#E4ECF5"
+            faceStyle: root.faceStyleFor(focusCard.d ? focusCard.d.agent : "claude")
+            accessory: root.accessoryFor(focusCard.d ? focusCard.d.agent : "claude", focusCard.d ? focusCard.d.ident : "")
+            forceReaction: root.forceReaction
             mood: focusCard.mood
           }
 
@@ -812,7 +939,10 @@ Item {
             spacing: 8
 
             // --------------------------------------------------- actions
-            Row {
+            // Flow, not Row: with "View answer" showing, the buttons wrap
+            // instead of spilling past the card.
+            Flow {
+              width: parent.width
               spacing: 6
               Rectangle {
                 width: newLbl.implicitWidth + 22; height: 28; radius: 14
@@ -828,6 +958,14 @@ Item {
                 Text { id: ansLbl; anchors.centerIn: parent; text: root.tr("ask.viewAnswer"); color: "#E4E6EA"; font.family: root.fontFamily; font.pixelSize: 12 }
                 MouseArea { id: ansMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                   onClicked: { root.pinned = false; root.answerKey = root.focusData.key } }
+              }
+              // Customise: icon only, it's the least used action.
+              Rectangle {
+                width: 28; height: 28; radius: 14
+                color: custMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.16) : Qt.rgba(1, 1, 1, 0.08)
+                Text { anchors.centerIn: parent; text: "⚙"; color: "#E4E6EA"; font.family: root.fontFamily; font.pixelSize: 14 }
+                MouseArea { id: custMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.openCustom() }
               }
             }
 
@@ -853,6 +991,9 @@ Item {
                   c: root.idColor(agent, ident)
                   label: root.displayName(agent, name)
                   mood: root.moodFor(state, updated)
+                  faceStyle: root.faceStyleFor(agent)
+                  accessory: root.accessoryFor(agent, ident)
+                  forceReaction: root.forceReaction
                   focused: key === root.focusKey
                   fontFamily: root.fontFamily
                   opacity: root.mode === "expanded" ? 1 : 0
@@ -904,6 +1045,9 @@ Item {
                     mini: true
                     size: 24
                     tint: root.idColor(agent, ident)
+                    faceStyle: root.faceStyleFor(agent)
+                    accessory: root.accessoryFor(agent, ident)
+                    forceReaction: root.forceReaction
                     mood: root.moodFor(state, updated)
                     opacity: root.grokOpen ? 0.22 : 1
                     Behavior on opacity {
@@ -990,6 +1134,9 @@ Item {
                     c: root.idColor(agent, ident)
                     label: name
                     mood: root.moodFor(state, updated)
+                    faceStyle: root.faceStyleFor(agent)
+                    accessory: root.accessoryFor(agent, ident)
+                    forceReaction: root.forceReaction
                     focused: key === root.focusKey
                     fontFamily: root.fontFamily
                     onActivated: root.pickedKey = key
@@ -1105,6 +1252,9 @@ Item {
             size: 50
             glowAlways: true
             tint: alert.d ? root.orbTint(alert.d.agent, alert.d.ident) : "#E4ECF5"
+            faceStyle: root.faceStyleFor(alert.d ? alert.d.agent : "claude")
+            accessory: root.accessoryFor(alert.d ? alert.d.agent : "claude", alert.d ? alert.d.ident : "")
+            forceReaction: root.forceReaction
             mood: alert.mood
           }
 
@@ -1185,6 +1335,9 @@ Item {
                 mini: true
                 size: 20
                 tint: root.idColor(agent, ident)
+                faceStyle: root.faceStyleFor(agent)
+                accessory: root.accessoryFor(agent, ident)
+                forceReaction: root.forceReaction
                 mood: root.moodFor(state, updated)
               }
             }
@@ -1291,9 +1444,217 @@ Item {
           glowAlways: true
           showBadge: root.greetMood === "working"
           tint: root.orbTint("claude", "")
+          faceStyle: root.faceStyleFor("claude")
+          accessory: root.accessoryFor("claude", "")
+          forceReaction: root.forceReaction
           mood: root.greetMood
           waving: root.greetWave
           scale: root.greetOrbScale
+        }
+      }
+
+      // ============================================================ custom
+      // Live preview on the left; who / style / gear / colour on the right.
+      // Every click is saved to config.json straight away.
+      Row {
+        id: customView
+        x: root.pad
+        y: root.pad
+        spacing: 8
+        opacity: root.mode === "custom" ? 1 : 0
+        visible: opacity > 0.01
+        Behavior on opacity { NumberAnimation { duration: root.mode === "custom" ? 260 : 120 } }
+
+        readonly property real cardH: Math.max(260, customCol.implicitHeight + 30)
+        readonly property color previewTint: root.customTarget === "claude" ? root.orbTint("claude", "")
+          : Qt.tint("#EEF2F7", Qt.alpha(root.palette[0], 0.16))
+        readonly property var swatches: ["#E0784F"].concat(root.palette)
+
+        Rectangle {
+          width: 200
+          height: customView.cardH
+          radius: 24
+          color: root.cardColor
+          border.width: 1
+          border.color: Qt.rgba(1, 1, 1, 0.04)
+
+          Text {
+            x: 18; y: 14
+            text: root.tr("custom.title")
+            color: "#9AA0AA"
+            font.family: root.fontFamily
+            font.pixelSize: 11
+            font.letterSpacing: 0.6
+          }
+
+          AgentFace {
+            id: previewFace
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: 66
+            size: 60
+            glowAlways: true
+            tint: customView.previewTint
+            faceStyle: root.customStyle
+            accessory: root.customGear
+            mood: root.previewMoods[root.previewMoodIndex]
+            live: root.mode === "custom"
+          }
+
+          Column {
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 16
+            spacing: 8
+
+            // ‹ mood ›
+            Row {
+              anchors.horizontalCenter: parent.horizontalCenter
+              spacing: 4
+              Repeater {
+                model: [-1, 0, 1]
+                Rectangle {
+                  required property int modelData
+                  width: modelData === 0 ? 104 : 28
+                  height: 28
+                  radius: 14
+                  color: modelData !== 0 && arrowMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.14) : Qt.rgba(1, 1, 1, 0.06)
+                  Text {
+                    anchors.centerIn: parent
+                    text: modelData === -1 ? "‹" : modelData === 1 ? "›"
+                      : root.stateText[root.previewMoods[root.previewMoodIndex]]
+                    color: modelData === 0 ? root.stateColor[root.previewMoods[root.previewMoodIndex]] : "#E4E6EA"
+                    font.family: root.fontFamily
+                    font.pixelSize: modelData === 0 ? 12 : 16
+                  }
+                  MouseArea {
+                    id: arrowMouse
+                    anchors.fill: parent
+                    enabled: modelData !== 0
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      var n = root.previewMoods.length
+                      root.previewMoodIndex = (root.previewMoodIndex + modelData + n) % n
+                    }
+                  }
+                }
+              }
+            }
+            Row {
+              anchors.horizontalCenter: parent.horizontalCenter
+              spacing: 6
+              OptPill { label: root.tr("custom.annoy"); onPicked: previewFace.react("annoyed") }
+              OptPill { label: root.tr("custom.dizzy"); onPicked: previewFace.react("dizzy") }
+            }
+          }
+        }
+
+        Rectangle {
+          width: root.customW - root.pad * 2 - 200 - customView.spacing
+          height: customView.cardH
+          radius: 24
+          color: root.cardColor
+          border.width: 1
+          border.color: Qt.rgba(1, 1, 1, 0.04)
+
+          Column {
+            id: customCol
+            x: 16; y: 14
+            width: parent.width - 32
+            spacing: 8
+
+            Row {
+              spacing: 6
+              OptPill { label: root.assistantName; on: root.customTarget === "claude"; onPicked: root.customTarget = "claude" }
+              OptPill { label: root.grokName + " Bots"; on: root.customTarget === "grok"; onPicked: root.customTarget = "grok" }
+            }
+
+            Text { text: root.tr("custom.style"); color: "#8B93A1"; font.family: root.fontFamily; font.pixelSize: 11; topPadding: 4 }
+            Row {
+              spacing: 6
+              Repeater {
+                model: ["orb", "cat", "dog", "hamster"]
+                OptPill {
+                  required property string modelData
+                  label: root.tr("custom.style." + modelData)
+                  face: true
+                  faceStyleName: modelData
+                  gear: root.customGear
+                  faceTint: customView.previewTint
+                  on: root.customStyle === modelData
+                  onPicked: root.setCustomStyle(modelData)
+                }
+              }
+            }
+
+            Text { text: root.tr("custom.gear"); color: "#8B93A1"; font.family: root.fontFamily; font.pixelSize: 11; topPadding: 4 }
+            Flow {
+              width: parent.width
+              spacing: 6
+              Repeater {
+                model: [""].concat(root.gearNames)
+                OptPill {
+                  required property string modelData
+                  label: root.tr(modelData === "" ? "custom.none" : "gear." + modelData)
+                  face: modelData !== ""
+                  faceStyleName: root.customStyle
+                  gear: modelData
+                  faceTint: customView.previewTint
+                  on: modelData === "" ? root.customGear.length === 0 : root.customGear.indexOf(modelData) >= 0
+                  onPicked: root.toggleGear(modelData)
+                }
+              }
+            }
+
+            Text {
+              visible: root.customTarget === "claude"
+              text: root.tr("custom.color"); color: "#8B93A1"; font.family: root.fontFamily; font.pixelSize: 11; topPadding: 4
+            }
+            Row {
+              visible: root.customTarget === "claude"
+              spacing: 7
+              Repeater {
+                model: customView.swatches
+                Rectangle {
+                  required property string modelData
+                  readonly property bool on: String(root.claudeColor).toLowerCase() === modelData.toLowerCase()
+                  width: 22; height: 22; radius: 11
+                  color: modelData
+                  border.width: on ? 2 : 0
+                  border.color: "white"
+                  scale: swMouse.containsMouse ? 1.15 : 1
+                  Behavior on scale { NumberAnimation { duration: 120 } }
+                  MouseArea {
+                    id: swMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.saveOpt("claudeColor", modelData)
+                  }
+                }
+              }
+            }
+
+            Item {
+              width: parent.width
+              height: 34
+              Text {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.tr("custom.hint")
+                color: "#6B7280"
+                font.family: root.fontFamily
+                font.pixelSize: 11
+              }
+              OptPill {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                label: root.tr("custom.done")
+                on: true
+                onPicked: root.customOpen = false
+              }
+            }
+          }
         }
       }
 
@@ -1329,6 +1690,9 @@ Item {
             showBadge: false
             glowAlways: true
             tint: root.orbTint("claude", "")
+            faceStyle: root.faceStyleFor("claude")
+            accessory: root.accessoryFor("claude", "")
+            forceReaction: root.forceReaction
             mood: promptEdit.text.length > 0 ? "thinking" : "idle"
           }
 
@@ -1474,6 +1838,9 @@ Item {
                 mini: true
                 size: 20
                 tint: root.idColor(agent, ident)
+                faceStyle: root.faceStyleFor(agent)
+                accessory: root.accessoryFor(agent, ident)
+                forceReaction: root.forceReaction
                 mood: root.moodFor(state, updated)
               }
             }
@@ -1517,6 +1884,9 @@ Item {
               size: 30
               glowAlways: true
               tint: root.orbTint("claude", "")
+              faceStyle: root.faceStyleFor("claude")
+              accessory: root.accessoryFor("claude", "")
+              forceReaction: root.forceReaction
               mood: answerView.mood
             }
 
