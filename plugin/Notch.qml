@@ -139,8 +139,8 @@ Item {
   property string grokMood: "idle"
   property string grokSummary: ""
   property bool grokOpen: false         // capsule unfolded
-  property string claudiKey: ""
-  property var claudiData: null
+  property string mainClaudeKey: ""
+  property var mainClaudeData: null
 
   readonly property string focusKey: pickedKey !== "" && indexOf(pickedKey) >= 0 ? pickedKey : primaryKey
   property var focusData: null
@@ -340,7 +340,7 @@ Item {
   // Recomputes everything that depends on time or ranking.
   function refresh() {
     var best = "", bestScore = -1
-    var claudi = "", claudiScore = -1
+    var mainKey = "", mainScore = -1
     var grok = [], grokKeys = [], moodCount = {}
     var claudes = 0
     for (var i = 0; i < agentModel.count; i++) {
@@ -350,7 +350,7 @@ Item {
       if (score > bestScore) { bestScore = score; best = r.key }
       if (r.agent === "claude") {
         claudes++
-        if (score > claudiScore) { claudiScore = score; claudi = r.key }
+        if (score > mainScore) { mainScore = score; mainKey = r.key }
       } else {
         grok.push({ key: r.key, score: score, mood: mood })
         grokKeys.push(r.key)
@@ -358,7 +358,7 @@ Item {
       }
     }
     if (best !== root.primaryKey) root.primaryKey = best
-    if (claudi !== root.claudiKey) root.claudiKey = claudi
+    if (mainKey !== root.mainClaudeKey) root.mainClaudeKey = mainKey
     root.claudeCount = claudes
     root.grokCount = grok.length
     if (JSON.stringify(grokKeys) !== JSON.stringify(root.grokOrder)) root.grokOrder = grokKeys
@@ -377,7 +377,7 @@ Item {
 
     // Only reassign when something actually changed; rebuilding these every
     // second re-ran every binding hanging off them and caused a hitch.
-    root.claudiData = root.same(root.claudiData, root.snapshot(root.claudiKey))
+    root.mainClaudeData = root.same(root.mainClaudeData, root.snapshot(root.mainClaudeKey))
     root.focusData = root.same(root.focusData, root.snapshot(root.focusKey))
     if (root.alertKey !== "" && root.indexOf(root.alertKey) < 0) root.alertKey = ""
     root.alertData = root.same(root.alertData, root.alertKey !== "" ? root.snapshot(root.alertKey) : null)
@@ -631,7 +631,7 @@ Item {
           size: 21
           glowAlways: true
           tint: root.orbTint("claude", "")
-          mood: root.claudiData ? root.moodFor(root.claudiData.state, root.claudiData.updated) : "sleep"
+          mood: root.mainClaudeData ? root.moodFor(root.mainClaudeData.state, root.mainClaudeData.updated) : "sleep"
         }
 
         MouseArea {

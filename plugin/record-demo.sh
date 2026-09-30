@@ -50,7 +50,7 @@ z 1.5
 # 1. Greeting
 $Q greet; z 5
 
-# 2. Collapsed: Claudi + cluster come alive
+# 2. Collapsed: Claude + cluster come alive
 S claude main working --task "Agregar dock animado" --detail "Leyendo Dock.kt"; z 1.6
 S grok investigador working --task "Tendencias de TV en X" --detail "Leyendo hilos"; z 1.0
 S grok ventas thinking --task "Resumen semanal"; z 1.2
@@ -73,7 +73,7 @@ S grok soporte waiting --task "Ticket #214" --detail "¿Reembolso o cambio de pr
 S grok redes error --task "Publicar reel" --detail "Instagram rechazó el video (formato)"; z 4.4
 S claude main done --detail "Dock animado listo y compilado"; z 4.6
 
-# 6. Talk to Claudi from the notch
+# 6. Talk to Claude from the notch
 $Q ask; z 1.0
 wtype -d 45 "Resume los cambios de hoy en tv-launcher"; z 0.9
 wtype -k Return; z 2.2
