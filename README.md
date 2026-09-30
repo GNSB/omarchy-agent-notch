@@ -14,6 +14,7 @@ https://github.com/GNSB/omarchy-agent-notch/raw/main/assets/demo.mp4
 - **Alerts**: peeks open on its own when an agent is waiting for input, finishes or fails.
 - **Ask from the notch**: click the Claude orb → type a prompt → runs headless `claude -p`,
   the answer renders in the notch (reply, or continue it in a terminal). `+` cycles the working dir over `~/Projects/*`.
+- **Fully configurable**: language (en/es), names, colours, timings, monitor, project dirs — one JSON file, live-reloaded.
 - **Grok Bots** (optional): `myzk-agents mcp` is a stdio MCP server with a `report_status` tool.
 - Zero dependencies beyond Omarchy (Quickshell) and `python3`.
 
@@ -31,16 +32,41 @@ enables the plugin in `~/.config/omarchy/shell.json`, **merges** the hooks into 
 
 ## Configure
 
-Knobs live at the top of `~/.config/omarchy/plugins/myzk.notch/Notch.qml`:
+Everything lives in **`~/.config/agent-notch/config.json`** (created from
+[`config.example.json`](config.example.json) on install). It's **live-reloaded** — save and the notch updates;
+no shell restart needed. Missing keys fall back to defaults.
 
-| knob | default | |
+| key | default | what it does |
 |---|---|---|
-| `screenName` | `""` | monitor to show it on (`hyprctl monitors`); empty = first screen |
+| `language` | `"en"` | UI language: `en`, `es` (add more in `i18n.json`) |
+| `assistantName` | `"Claude"` | what your Claude sessions are called in the notch |
+| `grokName` | `"Grok"` | label for bots reporting via MCP |
+| `screen` | `""` | monitor name from `hyprctl monitors`; empty = first screen |
+| `greetOnStart` | `true` | play the hello animation when the shell starts |
+| `projectDirs` | `["~/Projects/*"]` | globs the `+` button cycles through as working dir for asks |
+| `claudeCommand` | `"claude"` | Claude Code binary |
+| `permissionMode` | `"auto"` | `--permission-mode` for asks from the notch (`default`, `acceptEdits`, `plan`, `auto`…) |
+| `systemPrompt` | `""` | extra system prompt for notch asks; empty = the language's default |
+| `terminal` | `"xdg-terminal-exec --app-id=org.omarchy.terminal"` | used by "Continue in terminal" |
 | `sleepAfter` | `600` | seconds idle before an orb dozes off |
 | `doneGlow` | `90` | seconds a finished agent stays happy |
-| `fontFamily` | `Noto Sans` | |
+| `alertMs` | `7000` | how long alerts stay open (ms) |
+| `errorLoud` | `120` | seconds an error keeps shaking |
+| `fontFamily` | `"Noto Sans"` | |
+| `notchColor` / `cardColor` | `#000000` / `#18181B` | notch and card background |
+| `claudeColor` | `#E0784F` | Claude's orb tint |
+| `palette` | 10 colours | colours handed out to other agents |
+| `strings` | `{}` | override any UI text by key, e.g. `{"ask.button": "✎  Hey {name}"}` |
 
-After editing run `omarchy restart shell`.
+**Texts / translations**: all strings are in [`plugin/i18n.json`](plugin/i18n.json) (shared by the UI and the
+backend). Add a new language block and set `language` to it, or override single keys with `strings`.
+`{name}` is replaced with `assistantName`.
+
+**Deeper changes**: sizes and animations are in `plugin/Notch.qml` (widths near the top),
+the faces in `plugin/AgentFace.qml`. After editing QML run `omarchy restart shell`.
+
+Environment overrides: `AGENT_NOTCH_CONFIG` (config path), `AGENT_NOTCH_BACKEND` (backend path),
+`AGENT_NOTCH_I18N` (strings file for the backend).
 
 ## IPC
 
@@ -63,8 +89,8 @@ Bots then call `report_status(bot, state, task, detail)`.
 
 ## Notes
 
-- The UI strings are in Spanish (the Claude session is called "Claudi") — PRs for i18n welcome.
-- Asking from the notch runs `claude -p --permission-mode auto` — only use it if you're fine with that.
+- Asking from the notch runs `claude -p` headless with `permissionMode` (default `auto`) — set it to `default` or `plan` if you want it more careful.
+- New translations in `i18n.json` are very welcome as PRs.
 - `plugin/record-demo.sh OUT.mp4` records the showcase video with fake agents (needs `gpu-screen-recorder`).
 
 ## License

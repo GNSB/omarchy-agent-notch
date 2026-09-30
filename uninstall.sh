@@ -24,4 +24,4 @@ if os.path.exists(settings):
     json.dump(c, open(settings, "w"), indent=2)
 PY
 command -v omarchy >/dev/null && omarchy restart shell || true
-echo "Agent notch removed."
+echo "Agent notch removed. Your settings stay in ~/.config/agent-notch (delete it if you want)."

@@ -25,17 +25,65 @@ Item {
   property var shell: null
   property var manifest: null
 
+  // ------------------------------------------------------------------ config
+  // Settings live in ~/.config/agent-notch/config.json (live-reloaded);
+  // UI text lives in i18n.json next to this file, overridable per key
+  // through the config's "strings". See config.example.json.
+  readonly property string home: Quickshell.env("HOME")
+  readonly property string configPath: Quickshell.env("AGENT_NOTCH_CONFIG")
+    || home + "/.config/agent-notch/config.json"
+  readonly property string pluginDir: String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "")
+  property var cfg: ({})
+  property var i18n: ({})
+  function opt(key, fallback) { return cfg[key] !== undefined && cfg[key] !== null ? cfg[key] : fallback }
+  // tr("alert.done", {who: "Claude"}) → config override, then language, then English.
+  function tr(key, vars) {
+    var strings = opt("strings", {})
+    var lang = i18n[opt("language", "en")] || {}
+    var t = strings[key] !== undefined ? strings[key]
+      : lang[key] !== undefined ? lang[key] : ((i18n.en || {})[key] || key)
+    t = String(t).split("{name}").join(root.assistantName)
+    if (vars) for (var k in vars) t = t.split("{" + k + "}").join(vars[k])
+    return t
+  }
+
+  FileView {
+    path: root.configPath
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: {
+      try { root.cfg = JSON.parse(text()) || {} }
+      catch (e) { console.warn("agent-notch: bad config " + root.configPath + ": " + e); root.cfg = {} }
+    }
+    onLoadFailed: root.cfg = {}
+  }
+  FileView {
+    path: root.pluginDir + "i18n.json"
+    blockLoading: true
+    printErrors: false
+    onLoaded: { try { root.i18n = JSON.parse(text()) } catch (e) { root.i18n = {} } }
+  }
+
   // ------------------------------------------------------------------ knobs
-  // Saving this file hot-reloads the plugin, so these are the settings.
-  property string screenName: ""            // monitor name (hyprctl monitors); "" = first screen
+  // Defaults; override them in config.json rather than here.
+  property string screenName: opt("screen", "")          // monitor name (hyprctl monitors); "" = first screen
   property real topOffset: Style.bar.sizeHorizontal
-  property int sleepAfter: 600              // s idle before an orb dozes off
-  property int doneGlow: 90                 // s a finished agent stays happy
-  property int alertMs: 7000
-  property int errorLoud: 120               // s an error keeps shaking before it settles
-  property string fontFamily: "Noto Sans"
-  property color notchColor: "#000000"
-  property color cardColor: "#18181B"
+  property int sleepAfter: opt("sleepAfter", 600)        // s idle before an orb dozes off
+  property int doneGlow: opt("doneGlow", 90)             // s a finished agent stays happy
+  property int alertMs: opt("alertMs", 7000)
+  property int errorLoud: opt("errorLoud", 120)          // s an error keeps shaking before it settles
+  property string fontFamily: opt("fontFamily", "Noto Sans")
+  property color notchColor: opt("notchColor", "#000000")
+  property color cardColor: opt("cardColor", "#18181B")
+  property color claudeColor: opt("claudeColor", "#E0784F")
+  property string assistantName: opt("assistantName", "Claude")
+  property string grokName: opt("grokName", "Grok")
+  property var projectDirs: opt("projectDirs", ["~/Projects/*"])
+  property string terminalCmd: opt("terminal", "xdg-terminal-exec --app-id=org.omarchy.terminal")
+  property string claudeCmd: opt("claudeCommand", "claude")
+  property bool greetOnStart: opt("greetOnStart", true)
+  readonly property string backend: Quickshell.env("AGENT_NOTCH_BACKEND") || home + "/.local/bin/myzk-agents"
 
   readonly property int collapsedW: 300
   readonly property int collapsedH: 34
@@ -49,15 +97,16 @@ Item {
 
   // Grok Bots get the next unused colour as they first appear; Claude
   // sessions always wear Claude's terracotta.
-  readonly property var palette: ["#35C2AE", "#8B6CF6", "#4C9AFF", "#EC6FB3", "#F2C94C",
-    "#7ED957", "#F0544F", "#5AD1E6", "#C084FC", "#FF9F5A"]
+  readonly property var palette: opt("palette", ["#35C2AE", "#8B6CF6", "#4C9AFF", "#EC6FB3", "#F2C94C",
+    "#7ED957", "#F0544F", "#5AD1E6", "#C084FC", "#FF9F5A"])
   property var colorMap: ({})
   property int nextColor: 0
-  readonly property var stateText: ({
-    "idle": "en espera", "thinking": "pensando", "working": "trabajando",
-    "waiting": "te necesita", "done": "terminó", "error": "error", "sleep": "durmiendo",
-    "errorStale": "error"
-  })
+  readonly property var stateText: {
+    var m = {}
+    ;["idle", "thinking", "working", "waiting", "done", "error", "sleep", "errorStale"]
+      .forEach(function (k) { m[k] = root.tr("state." + k) })
+    return m
+  }
   readonly property var stateColor: ({
     "idle": "#8B93A1", "thinking": "#A78BFA", "working": "#5B9DFF",
     "waiting": "#F5B544", "done": "#3DD68C", "error": "#FF6B6B", "sleep": "#6B7280",
@@ -68,7 +117,6 @@ Item {
   })
 
   // ------------------------------------------------------------------ state
-  readonly property string home: Quickshell.env("HOME")
   // Demo mode (for recordings): read a separate board so real agents and
   // real Claude runs stay out of the video. See `demo` IPC.
   property bool demoMode: false
@@ -98,7 +146,7 @@ Item {
   property var focusData: null
   property var alertData: null
 
-  // Talking to Claudi from the notch.
+  // Talking to the assistant from the notch.
   property bool inputOpen: false
   property string answerKey: ""
   property var answerData: null
@@ -146,16 +194,16 @@ Item {
     if (text === "") return
     if (root.demoMode) {
       Quickshell.execDetached(["bash", "-c",
-        'XDG_STATE_HOME="$1" exec "$HOME/.local/bin/myzk-agents" set claude demo-notch thinking --name "$2" --task "$3" --detail "Pensando…"',
-        "myzk-notch", root.demoHome, text.slice(0, 22), text])
+        'XDG_STATE_HOME="$1" exec "$5" set claude demo-notch thinking --name "$2" --task "$3" --detail "$4"',
+        "myzk-notch", root.demoHome, text.slice(0, 22), text, root.tr("thinking"), root.backend])
       root.pickedKey = "claude:demo-notch"
       sendFx.restart()
       return
     }
     var id = root.uuid4()
     Quickshell.execDetached(["bash", "-c",
-      'MYZK_NOTCH_CWD="$1" exec "$HOME/.local/bin/myzk-agents" ask "$2" --id "$3"',
-      "myzk-notch", root.askDir, text, id])
+      'MYZK_NOTCH_CWD="$1" exec "$4" ask "$2" --id "$3"',
+      "myzk-notch", root.askDir, text, id, root.backend])
     root.pickedKey = "claude:" + id
     sendFx.restart()
   }
@@ -165,16 +213,16 @@ Item {
     var text = replyInput.text.trim()
     if (text === "" || !root.answerData) return
     Quickshell.execDetached(["bash", "-c",
-      'MYZK_NOTCH_CWD="$1" exec "$HOME/.local/bin/myzk-agents" ask "$2" --resume "$3"',
-      "myzk-notch", root.answerData.cwd || "~", text, root.answerData.ident])
+      'MYZK_NOTCH_CWD="$1" exec "$4" ask "$2" --resume "$3"',
+      "myzk-notch", root.answerData.cwd || "~", text, root.answerData.ident, root.backend])
     replyInput.text = ""
   }
 
   function openTerminal(d) {
     if (!d) return
     Quickshell.execDetached(["bash", "-c",
-      'cd "$1" 2>/dev/null; exec setsid uwsm-app -- xdg-terminal-exec --app-id=org.omarchy.terminal -e bash -lc "claude --resume $2"',
-      "myzk-notch", d.cwd || root.home, d.ident])
+      'cd "$1" 2>/dev/null; exec setsid uwsm-app -- $3 -e bash -lc "$4 --resume $2"',
+      "myzk-notch", d.cwd || root.home, d.ident, root.terminalCmd, root.claudeCmd])
     root.answerKey = ""
   }
 
@@ -185,14 +233,14 @@ Item {
     var key = agent + ":" + ident
     if (root.pickedKey === key) root.pickedKey = ""
     if (root.answerKey === key) root.answerKey = ""
-    Quickshell.execDetached([root.home + "/.local/bin/myzk-agents", "rm", agent, ident])
+    Quickshell.execDetached([root.backend, "rm", agent, ident])
   }
 
-  // Claude sessions are "Claudi"; the project only shows when there are
-  // several of them to tell apart.
+  // Claude sessions go by assistantName; the project only shows when there
+  // are several of them to tell apart.
   function displayName(agent, name) {
     if (agent !== "claude") return name
-    return root.claudeCount > 1 ? "Claudi · " + name : "Claudi"
+    return root.claudeCount > 1 ? root.assistantName + " · " + name : root.assistantName
   }
 
   // Stable model: rows are updated in place so faces keep animating instead
@@ -208,7 +256,7 @@ Item {
   }
 
   function idColor(agent, ident) {
-    if (agent === "claude") return "#E0784F"
+    if (agent === "claude") return root.claudeColor
     var assigned = root.colorMap[agent + ":" + ident]
     if (assigned) return assigned
     var h = 0
@@ -387,7 +435,9 @@ Item {
 
   Process {
     id: dirsProc
-    command: ["bash", "-c", "ls -d \"$HOME\"/Projects/*/ 2>/dev/null"]
+    // Each entry is a glob; "~" expands to $HOME. Unquoted $p lets bash glob it.
+    command: ["bash", "-c", 'for p in "$@"; do p="${p/#\\~/$HOME}"; for d in $p; do [ -d "$d" ] && echo "$d"; done; done',
+      "dirs"].concat(root.projectDirs)
     stdout: StdioCollector {
       onStreamFinished: {
         var dirs = String(text).split("\n").filter(function (l) { return l.length > 0 })
@@ -426,7 +476,7 @@ Item {
   Timer {
     interval: 900
     running: true
-    onTriggered: root.greet()
+    onTriggered: if (root.greetOnStart) root.greet()
   }
 
   SequentialAnimation {
@@ -667,7 +717,7 @@ Item {
             Text {
               width: parent.width
               text: focusCard.d
-                ? (focusCard.d.agent === "claude" ? "Claudi · " + focusCard.d.name : "Grok · " + focusCard.d.name)
+                ? (focusCard.d.agent === "claude" ? root.assistantName + " · " + focusCard.d.name : root.grokName + " · " + focusCard.d.name)
                 : "Nadie trabajando"
               elide: Text.ElideRight
               color: "#7C7F88"
@@ -734,7 +784,7 @@ Item {
         }
 
         // ----------------------------------------------------- chip card
-        // Claudi sessions on top, then every Grok Bot folded into one
+        // the assistant sessions on top, then every Grok Bot folded into one
         // capsule; clicking it deals the bots out of the capsule one by one.
         Rectangle {
           id: chipCard
@@ -759,7 +809,7 @@ Item {
               Rectangle {
                 width: newLbl.implicitWidth + 22; height: 28; radius: 14
                 color: newMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.16) : Qt.rgba(1, 1, 1, 0.08)
-                Text { id: newLbl; anchors.centerIn: parent; text: "✎  Pedir a Claudi"; color: "#E4E6EA"; font.family: root.fontFamily; font.pixelSize: 12 }
+                Text { id: newLbl; anchors.centerIn: parent; text: root.tr("ask.button"); color: "#E4E6EA"; font.family: root.fontFamily; font.pixelSize: 12 }
                 MouseArea { id: newMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                   onClicked: { root.pinned = false; root.openInput() } }
               }
@@ -767,13 +817,13 @@ Item {
                 visible: !!(root.focusData && root.focusData.answer)
                 width: ansLbl.implicitWidth + 22; height: 28; radius: 14
                 color: ansMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.16) : Qt.rgba(1, 1, 1, 0.08)
-                Text { id: ansLbl; anchors.centerIn: parent; text: "Ver respuesta"; color: "#E4E6EA"; font.family: root.fontFamily; font.pixelSize: 12 }
+                Text { id: ansLbl; anchors.centerIn: parent; text: root.tr("ask.viewAnswer"); color: "#E4E6EA"; font.family: root.fontFamily; font.pixelSize: 12 }
                 MouseArea { id: ansMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                   onClicked: { root.pinned = false; root.answerKey = root.focusData.key } }
               }
             }
 
-            // ------------------------------------------------ Claudi chips
+            // ------------------------------------------------ the assistant chips
             Grid {
               width: parent.width
               columns: 2
@@ -866,7 +916,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 1
                 Text {
-                  text: "Grok Bots  ·  " + root.grokCount
+                  text: root.grokName + " Bots  ·  " + root.grokCount
                   color: "#F2F3F5"
                   font.family: root.fontFamily
                   font.pixelSize: 13
@@ -1061,9 +1111,8 @@ Item {
             Text {
               width: parent.width
               text: !alert.d ? ""
-                : alert.d.state === "error" ? root.displayName(alert.d.agent, alert.d.name) + " no pudo terminar"
-                : alert.d.state === "waiting" ? root.displayName(alert.d.agent, alert.d.name) + " te necesita"
-                : root.displayName(alert.d.agent, alert.d.name) + " terminó"
+                : root.tr(alert.d.state === "error" ? "alert.error" : alert.d.state === "waiting" ? "alert.waiting" : "alert.done",
+                          {who: root.displayName(alert.d.agent, alert.d.name)})
               elide: Text.ElideRight
               color: "#F4F4F5"
               font.family: root.fontFamily
@@ -1072,7 +1121,7 @@ Item {
             }
             Text {
               width: parent.width
-              text: alert.d ? (alert.d.detail || alert.d.task) + (alert.d.answer ? "   ·   toca para ver la respuesta" : "") : ""
+              text: alert.d ? (alert.d.detail || alert.d.task) + (alert.d.answer ? root.tr("alert.tapAnswer") : "") : ""
               wrapMode: Text.Wrap
               maximumLineCount: 2
               elide: Text.ElideRight
@@ -1310,14 +1359,14 @@ Item {
 
             Text {
               visible: promptEdit.text.length === 0
-              text: "Pídele algo a Claudi…"
+              text: root.tr("ask.placeholder")
               color: "#6E717A"
               font.family: root.fontFamily
               font.pixelSize: 14
             }
           }
 
-          // "+" = where Claudi works; click to cycle through your projects.
+          // "+" = where the assistant works; click to cycle through your projects.
           Rectangle {
             id: dirBtn
             anchors.left: parent.left
@@ -1362,7 +1411,7 @@ Item {
             anchors.right: sendBtn.left
             anchors.rightMargin: 12
             anchors.verticalCenter: sendBtn.verticalCenter
-            text: "Enter enviar · Shift+Enter salto · Esc cerrar"
+            text: root.tr("ask.hint")
             color: "#5B5E66"
             font.family: root.fontFamily
             font.pixelSize: 10
@@ -1425,7 +1474,7 @@ Item {
       }
 
       // =============================================================== answer
-      // Claudi's reply for a notch task, with a bar to keep the conversation
+      // the assistant's reply for a notch task, with a bar to keep the conversation
       // going (resumes the same session) or jump into a terminal.
       Rectangle {
         id: answerView
@@ -1471,7 +1520,7 @@ Item {
               anchors.verticalCenter: parent.verticalCenter
               spacing: 1
               Text {
-                text: "Claudi  ·  " + (answerView.d ? root.stateText[answerView.mood] : "")
+                text: root.assistantName + "  ·  " + (answerView.d ? root.stateText[answerView.mood] : "")
                 color: "#F2F3F5"
                 font.family: root.fontFamily
                 font.pixelSize: 13
@@ -1495,14 +1544,14 @@ Item {
               Rectangle {
                 width: termLbl.implicitWidth + 20; height: 28; radius: 14
                 color: termMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.16) : Qt.rgba(1, 1, 1, 0.08)
-                Text { id: termLbl; anchors.centerIn: parent; text: "Seguir en terminal"; color: "#D4D4D8"; font.family: root.fontFamily; font.pixelSize: 11 }
+                Text { id: termLbl; anchors.centerIn: parent; text: root.tr("answer.terminal"); color: "#D4D4D8"; font.family: root.fontFamily; font.pixelSize: 11 }
                 MouseArea { id: termMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                   onClicked: root.openTerminal(answerView.d) }
               }
               Rectangle {
                 width: forgetLbl.implicitWidth + 20; height: 28; radius: 14
                 color: forgetMouse.containsMouse ? Qt.rgba(1, 0.35, 0.35, 0.25) : Qt.rgba(1, 1, 1, 0.08)
-                Text { id: forgetLbl; anchors.centerIn: parent; text: "Cerrar conversación"; color: "#D4D4D8"; font.family: root.fontFamily; font.pixelSize: 11 }
+                Text { id: forgetLbl; anchors.centerIn: parent; text: root.tr("answer.close"); color: "#D4D4D8"; font.family: root.fontFamily; font.pixelSize: 11 }
                 MouseArea { id: forgetMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                   onClicked: root.forget(answerView.d.agent, answerView.d.ident) }
               }
@@ -1530,7 +1579,7 @@ Item {
               wrapMode: Text.Wrap
               textFormat: Text.MarkdownText
               text: !answerView.d ? ""
-                : answerView.busy ? "_Claudi está trabajando…_  " + (answerView.d.detail || "")
+                : answerView.busy ? "_" + root.tr("answer.busy") + "_  " + (answerView.d.detail || "")
                 : (answerView.d.answer || answerView.d.detail || "").split("\n")
                     .filter(function (l) { return l.indexOf("🔊") !== 0 }).join("\n")
               color: "#E4E6EA"
@@ -1572,7 +1621,7 @@ Item {
               anchors.left: replyInput.left
               anchors.verticalCenter: parent.verticalCenter
               visible: replyInput.text.length === 0
-              text: answerView.busy ? "Claudi está trabajando…" : "Responde a Claudi…"
+              text: answerView.busy ? root.tr("answer.busy") : root.tr("answer.reply")
               color: "#6E717A"
               font.family: root.fontFamily
               font.pixelSize: 13

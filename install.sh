@@ -15,6 +15,15 @@ echo "→ plugin  $PLUGIN_DIR"
 mkdir -p "$PLUGIN_DIR"
 cp plugin/* "$PLUGIN_DIR/"
 
+CONFIG="$HOME/.config/agent-notch/config.json"
+if [ ! -f "$CONFIG" ]; then
+  echo "→ config  $CONFIG"
+  mkdir -p "$(dirname "$CONFIG")"
+  cp config.example.json "$CONFIG"
+else
+  echo "→ config  $CONFIG (kept yours)"
+fi
+
 echo "→ backend $BIN"
 mkdir -p "$(dirname "$BIN")"
 install -m 755 bin/myzk-agents "$BIN"
@@ -65,4 +74,4 @@ if command -v omarchy >/dev/null; then
   echo "→ restarting shell"
   omarchy restart shell || echo "  (restart it yourself: omarchy restart shell)"
 fi
-echo "Done. Open a Claude Code session and watch the notch."
+echo "Done. Open a Claude Code session and watch the notch. Settings: $CONFIG"

@@ -8,7 +8,7 @@ myzk.notch overlay watches. Writers:
   myzk-agents mcp                  stdio MCP server; Grok Bots call report_status
   myzk-agents set AGENT ID STATE [--name N] [--task T] [--detail D]
   myzk-agents rm AGENT ID
-  myzk-agents ask PROMPT [--resume SID | --id NEW_UUID]   run Claudi headless (notch input)
+  myzk-agents ask PROMPT [--resume SID | --id NEW_UUID]   run Claude headless (notch input)
 
 Readers:
   myzk-agents list                 one-shot table
@@ -31,6 +31,10 @@ STATE_DIR = os.path.join(
     os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "myzk-agents"
 )
 SUMMARY = os.path.join(STATE_DIR, "summary.json")
+CONFIG = os.environ.get("AGENT_NOTCH_CONFIG") or os.path.expanduser(
+    "~/.config/agent-notch/config.json")
+I18N = os.environ.get("AGENT_NOTCH_I18N") or os.path.expanduser(
+    "~/.config/omarchy/plugins/myzk.notch/i18n.json")
 LOCK = os.path.join(STATE_DIR, ".lock")
 
 STATES = ("idle", "thinking", "working", "waiting", "done", "error")
@@ -40,6 +44,41 @@ ACTIVE = ("thinking", "working", "waiting")
 # is assumed dead (crashed session, bot that never said "done").
 IDLE_TTL = 2 * 3600
 MAX_AGE = 8 * 3600
+
+
+# --------------------------------------------------------------- config
+
+def _read_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+_CFG = None
+_STRINGS = None
+
+
+def cfg(key, default=None):
+    global _CFG
+    if _CFG is None:
+        _CFG = _read_json(CONFIG)
+    v = _CFG.get(key)
+    return default if v is None else v
+
+
+def tr(key, **kw):
+    """UI text: config "strings" override, then the language, then English."""
+    global _STRINGS
+    if _STRINGS is None:
+        i18n = _read_json(I18N)
+        _STRINGS = {**i18n.get("en", {}), **i18n.get(cfg("language", "en"), {}),
+                    **cfg("strings", {})}
+    text = str(_STRINGS.get(key, key)).replace("{name}", cfg("assistantName", "Claude"))
+    for k, v in kw.items():
+        text = text.replace("{" + k + "}", str(v))
+    return text
 
 
 # ---------------------------------------------------------------- store
@@ -88,14 +127,6 @@ def update(agent, ident, state=None, remove=False, **fields):
 
 # ---------------------------------------------------------- claude hook
 
-TOOL_VERBS = {
-    "Bash": "Ejecutando", "Edit": "Editando", "Write": "Escribiendo",
-    "Read": "Leyendo", "NotebookEdit": "Editando", "Grep": "Buscando",
-    "Glob": "Buscando", "WebFetch": "Web", "WebSearch": "Buscando en web",
-    "Agent": "Subagente", "Skill": "Skill", "TodoWrite": "Planificando",
-}
-
-
 def _short(s, n=70):
     s = " ".join(str(s).split())
     return s if len(s) <= n else s[: n - 1] + "…"
@@ -122,7 +153,8 @@ def _tool_detail(tool, inp):
     if tool.startswith("mcp__"):
         parts = tool.split("__")
         return _short(f"{parts[1]}: {parts[-1]}")
-    verb = TOOL_VERBS.get(tool, tool)
+    verb = tr("tool." + tool)
+    verb = tool if verb == "tool." + tool else verb
     return _short(f"{verb} {arg}".strip())
 
 
@@ -142,22 +174,22 @@ def claude_hook():
         if _load().get(f"claude:{sid}", {}).get("source") != "notch":
             update("claude", sid, remove=True)
     elif kind == "SessionStart":
-        update("claude", sid, "idle", detail="Sesión abierta", **common)
+        update("claude", sid, "idle", detail=tr("sessionOpen"), **common)
     elif kind == "UserPromptSubmit":
         # Pasted blocks arrive wrapped in <pasted_content id=…> tags; show the text.
         prompt = re.sub(r"</?pasted_content[^>]*>", " ", ev.get("prompt", ""))
         prompt = _short(prompt, 90) or "…"
-        update("claude", sid, "thinking", task=prompt, detail="Pensando…", **common)
+        update("claude", sid, "thinking", task=prompt, detail=tr("thinking"), **common)
     elif kind == "PreToolUse":
         update("claude", sid, "working",
                detail=_tool_detail(ev.get("tool_name", ""), ev.get("tool_input")), **common)
     elif kind == "PostToolUse":
-        update("claude", sid, "thinking", detail="Pensando…", **common)
+        update("claude", sid, "thinking", detail=tr("thinking"), **common)
     elif kind in ("Notification", "PermissionRequest"):
-        msg = ev.get("message") or "Esperando tu permiso"
+        msg = ev.get("message") or tr("waitingPermission")
         update("claude", sid, "waiting", detail=_short(msg), **common)
     elif kind == "Stop":
-        update("claude", sid, "done", detail="Listo, esperando tu próximo mensaje", **common)
+        update("claude", sid, "done", detail=tr("readyNext"), **common)
 
 
 # ------------------------------------------------------------ mcp server
@@ -248,15 +280,9 @@ def mcp_server():
 
 # ------------------------------------------------------------------ ask
 
-NOTCH_PROMPT = (
-    "Estás respondiendo desde el notch del escritorio Omarchy del usuario (una "
-    "tarjeta pequeña). Responde en español, claro y breve (idealmente menos de "
-    "12 líneas), en markdown simple. Si hiciste cambios, di cuáles en una línea."
-)
-
-
 def _claude_bin():
-    return shutil.which("claude") or os.path.expanduser(
+    cmd = os.path.expanduser(cfg("claudeCommand", "claude"))
+    return shutil.which(cmd) or shutil.which("claude") or os.path.expanduser(
         "~/.local/share/mise/installs/claude/latest/claude")
 
 
@@ -264,7 +290,7 @@ def ask(prompt, resume=None, new_id=None):
     sid = resume or new_id or str(uuid.uuid4())
     cwd = os.path.expanduser(os.environ.get("MYZK_NOTCH_CWD", "~"))
     update("claude", sid, "thinking", name=_short(prompt, 22), cwd=cwd, source="notch",
-           task=_short(prompt, 90), detail="Pensando…", answer="")
+           task=_short(prompt, 90), detail=tr("thinking"), answer="")
 
     # Detach twice so the notch never waits on (or kills) the run.
     if os.fork():
@@ -277,7 +303,8 @@ def ask(prompt, resume=None, new_id=None):
         os.dup2(devnull, fd)
 
     args = [_claude_bin(), "-p", prompt, "--output-format", "json",
-            "--permission-mode", "auto", "--append-system-prompt", NOTCH_PROMPT]
+            "--permission-mode", cfg("permissionMode", "auto"),
+            "--append-system-prompt", cfg("systemPrompt", "") or tr("systemPrompt")]
     args += ["--resume", sid] if resume else ["--session-id", sid, "-n", "Notch"]
     log = os.path.join(STATE_DIR, "ask.log")
     try:
@@ -285,7 +312,7 @@ def ask(prompt, resume=None, new_id=None):
         # mise may print a banner first; the result is the last JSON line.
         line = next((l for l in reversed(out.stdout.splitlines()) if l.startswith("{")), "{}")
         data = json.loads(line)
-        answer = str(data.get("result") or "").strip() or "Sin respuesta"
+        answer = str(data.get("result") or "").strip() or tr("noAnswer")
         # Drop "🔊 …" spoken-summary lines (for TTS hooks), not for the card.
         answer = "\n".join(l for l in answer.splitlines() if not l.startswith("🔊")).strip() or answer
         failed = bool(data.get("is_error")) or out.returncode != 0 or not data
@@ -297,7 +324,7 @@ def ask(prompt, resume=None, new_id=None):
             update("claude", sid, remove=True)
             sid = real
     except Exception as e:  # timeout, missing binary…
-        answer, failed = f"No pude completar la tarea: {e}", True
+        answer, failed = tr("couldNotComplete", error=e), True
     first = next((l for l in answer.splitlines() if l.strip()), answer)
     first = re.sub(r"[*_`#>]+", "", first).strip()
     update("claude", sid, "error" if failed else "done", source="notch", name=_short(prompt, 22),
@@ -307,9 +334,6 @@ def ask(prompt, resume=None, new_id=None):
 
 # ----------------------------------------------------------------- views
 
-LABEL = {"claude": "✻ Claudi", "grok": "◆ Grok"}
-STATE_ES = {"idle": "en espera", "thinking": "pensando", "working": "trabajando",
-            "waiting": "te necesita", "done": "terminó", "error": "error"}
 COLOR = {"idle": "90", "thinking": "36", "working": "32", "waiting": "33;1",
          "done": "34", "error": "31;1"}
 
@@ -323,17 +347,18 @@ def render():
     agents = sorted(_load().values(),
                     key=lambda a: (a.get("state") not in ACTIVE, -a.get("updated", 0)))
     if not agents:
-        return "  (ningún agente activo)\n"
+        return f"  {tr('cli.none')}\n"
     out = []
     for a in agents:
         st = a.get("state", "idle")
-        head = f"{LABEL.get(a['agent'], a['agent'])} · {a.get('name', a['id'])}"
+        label = {"claude": "✻ " + cfg("assistantName", "Claude"), "grok": "◆ " + cfg("grokName", "Grok")}
+        head = f"{label.get(a['agent'], a['agent'])} · {a.get('name', a['id'])}"
         out.append(f"\033[1m{head}\033[0m  \033[{COLOR.get(st, '0')}m● "
-                   f"{STATE_ES.get(st, st)}\033[0m  \033[90m{_ago(a.get('since', 0))}\033[0m")
+                   f"{tr('state.' + st)}\033[0m  \033[90m{_ago(a.get('since', 0))}\033[0m")
         if a.get("task"):
-            out.append(f"   tarea: {a['task']}")
+            out.append(f"   {tr('cli.task')}: {a['task']}")
         if a.get("detail"):
-            out.append(f"   ahora: {a['detail']}")
+            out.append(f"   {tr('cli.now')}: {a['detail']}")
         out.append("")
     return "\n".join(out)
 
@@ -341,8 +366,8 @@ def render():
 def watch():
     try:
         while True:
-            sys.stdout.write("\033[H\033[2J\033[1mAgentes\033[0m  "
-                             f"\033[90m{time.strftime('%H:%M:%S')} · q/Ctrl+C para salir\033[0m\n\n")
+            sys.stdout.write(f"\033[H\033[2J\033[1m{tr('cli.title')}\033[0m  "
+                             f"\033[90m{time.strftime('%H:%M:%S')} · {tr('cli.quit')}\033[0m\n\n")
             sys.stdout.write(render())
             sys.stdout.flush()
             time.sleep(1)

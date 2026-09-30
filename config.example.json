@@ -1,0 +1,28 @@
+{
+  "language": "en",
+  "assistantName": "Claude",
+  "grokName": "Grok",
+
+  "screen": "",
+  "greetOnStart": true,
+
+  "projectDirs": ["~/Projects/*"],
+  "claudeCommand": "claude",
+  "permissionMode": "auto",
+  "systemPrompt": "",
+  "terminal": "xdg-terminal-exec --app-id=org.omarchy.terminal",
+
+  "sleepAfter": 600,
+  "doneGlow": 90,
+  "alertMs": 7000,
+  "errorLoud": 120,
+
+  "fontFamily": "Noto Sans",
+  "notchColor": "#000000",
+  "cardColor": "#18181B",
+  "claudeColor": "#E0784F",
+  "palette": ["#35C2AE", "#8B6CF6", "#4C9AFF", "#EC6FB3", "#F2C94C",
+              "#7ED957", "#F0544F", "#5AD1E6", "#C084FC", "#FF9F5A"],
+
+  "strings": {}
+}
