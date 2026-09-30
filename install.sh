@@ -58,7 +58,7 @@ c = load(settings)
 hooks = c.setdefault("hooks", {})
 cmd = bin_path + " claude-hook"
 for event in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
-              "Notification", "Stop", "SessionEnd"]:
+              "Notification", "Stop", "SessionEnd", "PreCompact"]:
     groups = hooks.setdefault(event, [])
     if any(h.get("command") == cmd for g in groups for h in g.get("hooks", [])):
         continue

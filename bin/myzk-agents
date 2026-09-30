@@ -37,11 +37,12 @@ I18N = os.environ.get("AGENT_NOTCH_I18N") or os.path.expanduser(
     "~/.config/omarchy/plugins/myzk.notch/i18n.json")
 LOCK = os.path.join(STATE_DIR, ".lock")
 
-STATES = ("idle", "thinking", "working", "waiting", "done", "error")
-ACTIVE = ("thinking", "working", "waiting")
+STATES = ("idle", "thinking", "working", "upload", "restart", "waiting", "done", "error")
+ACTIVE = ("thinking", "working", "upload", "restart", "waiting")
 
-# Finished or idle entries fade out after this; anything silent for MAX_AGE
-# is assumed dead (crashed session, bot that never said "done").
+# Claude sessions: finished or idle entries fade out after this; anything
+# silent for MAX_AGE is assumed dead (crashed session). Grok Bots are a fixed
+# roster, so they stay (asleep) until they report "off" or you `rm` them.
 IDLE_TTL = 2 * 3600
 MAX_AGE = 8 * 3600
 
@@ -95,7 +96,8 @@ def _save(agents):
     now = time.time()
     agents = {
         k: a for k, a in agents.items()
-        if now - a.get("updated", 0) < (MAX_AGE if a.get("state") in ACTIVE else IDLE_TTL)
+        if a.get("agent") == "grok"
+        or now - a.get("updated", 0) < (MAX_AGE if a.get("state") in ACTIVE else IDLE_TTL)
     }
     tmp = SUMMARY + ".tmp"
     with open(tmp, "w") as f:
@@ -158,6 +160,20 @@ def _tool_detail(tool, inp):
     return _short(f"{verb} {arg}".strip())
 
 
+# Commands that send stuff somewhere: the face switches to its "upload" look.
+UPLOAD_RE = re.compile(
+    r"\b(git\s+push|gh\s+(release\s+upload|pr\s+create|gist\s+create)|scp|rsync|rclone\s+(copy|sync)"
+    r"|npm\s+publish|cargo\s+publish|twine\s+upload|eas\s+(submit|update)|docker\s+push)\b"
+    r"|curl\b.*\s(-T|-F|--upload-file|--form)\b")
+
+
+def _is_upload(tool, inp):
+    inp = inp or {}
+    if tool == "Bash":
+        return bool(UPLOAD_RE.search(inp.get("command", "")))
+    return tool.startswith("mcp__") and re.search(r"upload|create_file|update_file|share", tool) is not None
+
+
 def claude_hook():
     try:
         ev = json.load(sys.stdin)
@@ -174,15 +190,22 @@ def claude_hook():
         if _load().get(f"claude:{sid}", {}).get("source") != "notch":
             update("claude", sid, remove=True)
     elif kind == "SessionStart":
-        update("claude", sid, "idle", detail=tr("sessionOpen"), **common)
+        # /clear, compaction and resume play the "restart" look for a moment.
+        if ev.get("source") in ("clear", "compact", "resume"):
+            update("claude", sid, "restart", detail=tr("restart." + ev["source"]), **common)
+        else:
+            update("claude", sid, "idle", detail=tr("sessionOpen"), **common)
+    elif kind == "PreCompact":
+        update("claude", sid, "restart", detail=tr("restart.compact"), **common)
     elif kind == "UserPromptSubmit":
         # Pasted blocks arrive wrapped in <pasted_content id=…> tags; show the text.
         prompt = re.sub(r"</?pasted_content[^>]*>", " ", ev.get("prompt", ""))
         prompt = _short(prompt, 90) or "…"
         update("claude", sid, "thinking", task=prompt, detail=tr("thinking"), **common)
     elif kind == "PreToolUse":
-        update("claude", sid, "working",
-               detail=_tool_detail(ev.get("tool_name", ""), ev.get("tool_input")), **common)
+        tool, inp = ev.get("tool_name", ""), ev.get("tool_input")
+        update("claude", sid, "upload" if _is_upload(tool, inp) else "working",
+               detail=_tool_detail(tool, inp), **common)
     elif kind == "PostToolUse":
         update("claude", sid, "thinking", detail=tr("thinking"), **common)
     elif kind in ("Notification", "PermissionRequest"):
@@ -208,8 +231,9 @@ MCP_TOOLS = [{
             "bot": {"type": "string", "description": "Your bot's name, always the same."},
             "state": {
                 "type": "string",
-                "enum": ["working", "waiting", "done", "error", "idle", "off"],
-                "description": "working = busy; waiting = needs the user; done/error = "
+                "enum": ["working", "upload", "restart", "waiting", "done", "error", "idle", "off"],
+                "description": "working = busy; upload = sending/publishing files; restart = "
+                               "restarting or resetting; waiting = needs the user; done/error = "
                                "finished; idle = nothing to do; off = remove from the bar.",
             },
             "task": {"type": "string", "description": "The overall task, short."},
@@ -335,7 +359,7 @@ def ask(prompt, resume=None, new_id=None):
 # ----------------------------------------------------------------- views
 
 COLOR = {"idle": "90", "thinking": "36", "working": "32", "waiting": "33;1",
-         "done": "34", "error": "31;1"}
+         "done": "34", "error": "31;1", "upload": "36;1", "restart": "35"}
 
 
 def _ago(t):

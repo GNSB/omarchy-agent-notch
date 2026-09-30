@@ -43,6 +43,11 @@ no shell restart needed. Missing keys fall back to defaults.
 | `grokName` | `"Grok"` | label for bots reporting via MCP |
 | `screen` | `""` | monitor name from `hyprctl monitors`; empty = first screen |
 | `placement` | `"below"` | `"below"`: hangs under the bar. `"bar"`: sits **inside** the bar like a Mac notch and only drops over windows when it opens (see below) |
+| `faceStyle` | `"orb"` | face design: `"orb"` (glossy ball), `"cat"` (ears, whiskers, swishing tail), `"dog"` (floppy ears, snout, tongue, wagging tail) or `"hamster"` (round ears, stuffed cheeks, buck teeth) |
+| `grokFaceStyle` | = `faceStyle` | same, but only for Grok Bots (e.g. cat Claude, orb bots) |
+| `accessory` | `[]` | head gear, one name or a list: `hat`, `cowboy`, `crown`, `party`, `bow`, `headphones`, `helmet`, `mask`, `glasses`, `shades` (e.g. `["crown", "shades"]`) |
+| `grokAccessory` | = `accessory` | same, for Grok Bots |
+| `accessories` | `{}` | per-bot override by name, e.g. `{"Researcher": "glasses"}` |
 | `greetOnStart` | `true` | play the hello animation when the shell starts |
 | `projectDirs` | `["~/Projects/*"]` | globs the `+` button cycles through as working dir for asks |
 | `claudeCommand` | `"claude"` | Claude Code binary |
@@ -58,6 +63,18 @@ no shell restart needed. Missing keys fall back to defaults.
 | `claudeColor` | `#E0784F` | Claude's orb tint |
 | `palette` | 10 colours | colours handed out to other agents |
 | `strings` | `{}` | override any UI text by key, e.g. `{"ask.button": "✎  Hey {name}"}` |
+
+**Customize panel.** Click **⚙ Customize** in the expanded notch (or
+`qs -p /usr/share/omarchy/shell ipc call myzk.notch customize`): pick the style, accessories and colour for your
+assistant or for the Grok Bots, with a live preview you can cycle through every mood and poke. Each click is saved to
+`config.json` right away.
+
+**Moods & reactions.** Faces show `idle`, `thinking`, `working`, `upload` (Claude runs `git push`, `scp`,
+`rsync`, `npm publish`… or an MCP upload), `restart` (`/clear`, compaction, resume), `waiting`, `done`,
+`error` and `sleep`. They also react to you: the eyes follow the cursor, three quick clicks annoy them,
+six clicks or shaking the cursor over them make them dizzy. Try it with
+`qs -p /usr/share/omarchy/shell ipc call myzk.notch react dizzy` (or `annoyed`). Grok Bots can report
+`upload` and `restart` through `report_status` too.
 
 **Notch inside the bar** (`"placement": "bar"`): the collapsed notch takes the bar's height and covers
 its center, so nothing hangs over your browser tabs. Move whatever you have in the bar's center section

@@ -6,6 +6,9 @@
   "screen": "",
   "placement": "below",
   "greetOnStart": true,
+  "faceStyle": "orb",
+  "accessory": [],
+  "accessories": {},
 
   "projectDirs": ["~/Projects/*"],
   "claudeCommand": "claude",
