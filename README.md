@@ -42,6 +42,7 @@ no shell restart needed. Missing keys fall back to defaults.
 | `assistantName` | `"Claude"` | what your Claude sessions are called in the notch |
 | `grokName` | `"Grok"` | label for bots reporting via MCP |
 | `screen` | `""` | monitor name from `hyprctl monitors`; empty = first screen |
+| `placement` | `"below"` | `"below"`: hangs under the bar. `"bar"`: sits **inside** the bar like a Mac notch and only drops over windows when it opens (see below) |
 | `greetOnStart` | `true` | play the hello animation when the shell starts |
 | `projectDirs` | `["~/Projects/*"]` | globs the `+` button cycles through as working dir for asks |
 | `claudeCommand` | `"claude"` | Claude Code binary |
@@ -57,6 +58,11 @@ no shell restart needed. Missing keys fall back to defaults.
 | `claudeColor` | `#E0784F` | Claude's orb tint |
 | `palette` | 10 colours | colours handed out to other agents |
 | `strings` | `{}` | override any UI text by key, e.g. `{"ask.button": "✎  Hey {name}"}` |
+
+**Notch inside the bar** (`"placement": "bar"`): the collapsed notch takes the bar's height and covers
+its center, so nothing hangs over your browser tabs. Move whatever you have in the bar's center section
+out of the way first, e.g. `omarchy bar move omarchy.clock --section left` (repeat for each center widget;
+the list is under `bar.layout.center` in `~/.config/omarchy/shell.json`). Only top bars are supported.
 
 **Texts / translations**: all strings are in [`plugin/i18n.json`](plugin/i18n.json) (shared by the UI and the
 backend). Add a new language block and set `language` to it, or override single keys with `strings`.
