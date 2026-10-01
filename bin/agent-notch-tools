@@ -23,6 +23,7 @@ import sys
 import time
 
 HOME = os.path.expanduser("~")
+REAL_HOME = os.path.realpath(HOME)
 STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local/state"), "myzk-agents")
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".tiff", ".bmp"}
 
@@ -48,10 +49,10 @@ def git(args, cwd, timeout=20):
 
 
 def repo_root(path):
-    p = os.path.abspath(os.path.expanduser(path))
+    p = os.path.realpath(os.path.expanduser(path))
     while len(p) > 1:
         if os.path.exists(os.path.join(p, ".git")):
-            return None if p == HOME else p   # a dotfiles repo in ~ would match everything
+            return None if p == REAL_HOME else p   # a dotfiles repo in ~ would match everything
         p = os.path.dirname(p)
     return None
 

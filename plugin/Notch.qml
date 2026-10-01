@@ -253,6 +253,12 @@ Item {
   property var i18n: ({})
   function opt(key, fallback) { return cfg[key] !== undefined && cfg[key] !== null ? cfg[key] : fallback }
   // tr("alert.done", {who: "Claude"}) → config override, then language, then English.
+  // Drop "🔊 …" spoken-summary lines, unless that's all there is (then an empty card would show).
+  function dropSpoken(s) {
+    var str = String(s || "")
+    var kept = str.split("\n").filter(function (l) { return l.indexOf("🔊") !== 0 }).join("\n")
+    return kept.trim() !== "" ? kept : str
+  }
   function tr(key, vars) {
     var strings = opt("strings", {})
     var lang = i18n[opt("language", "en")] || {}
@@ -2584,8 +2590,7 @@ Item {
               textFormat: Text.MarkdownText
               text: !answerView.d ? ""
                 : answerView.busy ? "_" + root.tr("answer.busy") + "_  " + (answerView.d.detail || "")
-                : (answerView.d.answer || answerView.d.detail || "").split("\n")
-                    .filter(function (l) { return l.indexOf("🔊") !== 0 }).join("\n")
+                : root.dropSpoken(answerView.d.answer || answerView.d.detail || "")
               color: "#E4E6EA"
               linkColor: "#7FB2FF"
               font.family: root.fontFamily
