@@ -255,11 +255,15 @@ struct FaceView: View {
         let happy = look == "done" || look == "working" || look == "upload"
         switch style {
         case "cat":
+            let soft = StrokeStyle(lineWidth: s * 0.06, lineCap: .round, lineJoin: .round)   // rounds the ear tips
             for side in [-1.0, 1.0] {
-                ctx.fill(tri(CGPoint(x: side * s * 0.46, y: -s * 0.12), CGPoint(x: side * s * 0.4, y: -s * 0.66),
-                             CGPoint(x: side * s * 0.1, y: -s * 0.44)), with: .color(base))
-                ctx.fill(tri(CGPoint(x: side * s * 0.4, y: -s * 0.2), CGPoint(x: side * s * 0.37, y: -s * 0.55),
-                             CGPoint(x: side * s * 0.18, y: -s * 0.41)), with: .color(pink.opacity(0.85)))
+                let outer = tri(CGPoint(x: side * s * 0.45, y: -s * 0.1), CGPoint(x: side * s * 0.39, y: -s * 0.62),
+                                CGPoint(x: side * s * 0.1, y: -s * 0.43))
+                ctx.fill(outer, with: .color(base)); ctx.stroke(outer, with: .color(base), style: soft)
+                let inner = tri(CGPoint(x: side * s * 0.39, y: -s * 0.2), CGPoint(x: side * s * 0.36, y: -s * 0.52),
+                                CGPoint(x: side * s * 0.19, y: -s * 0.4))
+                ctx.fill(inner, with: .color(pink.opacity(0.85)))
+                ctx.stroke(inner, with: .color(pink.opacity(0.85)), style: StrokeStyle(lineWidth: s * 0.03, lineCap: .round, lineJoin: .round))
             }
             var tail = Path()
             let sw = sin(t * (happy ? 6 : 2)) * s * 0.12
@@ -294,16 +298,32 @@ struct FaceView: View {
         let ink = Color(hex: "#141418")
         switch style {
         case "cat":
-            ctx.fill(tri(CGPoint(x: -s * 0.04, y: s * 0.1), CGPoint(x: s * 0.04, y: s * 0.1),
-                         CGPoint(x: 0, y: s * 0.145)), with: .color(pink))
+            // tabby stripes on the forehead + soft cheeks
+            var stripes = Path()
+            for (dx, len) in [(-0.09, 0.1), (0.0, 0.13), (0.09, 0.1)] {
+                stripes.move(to: CGPoint(x: s * dx, y: -s * 0.47)); stripes.addLine(to: CGPoint(x: s * dx, y: -s * (0.47 - len)))
+            }
+            ctx.stroke(stripes, with: .color(mix(base, .black, 0.28).opacity(0.7)), style: StrokeStyle(lineWidth: s * 0.035, lineCap: .round))
+            for side in [-1.0, 1.0] {
+                ctx.fill(oval(side * s * 0.29, s * 0.2, s * 0.16, s * 0.1), with: .color(pink.opacity(0.4)))
+            }
+            ctx.fill(tri(CGPoint(x: -s * 0.045, y: s * 0.1), CGPoint(x: s * 0.045, y: s * 0.1),
+                         CGPoint(x: 0, y: s * 0.15)), with: .color(pink))
+            var mouth = Path()   // little "w" mouth
+            mouth.move(to: CGPoint(x: 0, y: s * 0.15)); mouth.addLine(to: CGPoint(x: 0, y: s * 0.19))
+            mouth.move(to: CGPoint(x: -s * 0.07, y: s * 0.2))
+            mouth.addQuadCurve(to: CGPoint(x: 0, y: s * 0.19), control: CGPoint(x: -s * 0.035, y: s * 0.24))
+            mouth.addQuadCurve(to: CGPoint(x: s * 0.07, y: s * 0.2), control: CGPoint(x: s * 0.035, y: s * 0.24))
+            ctx.stroke(mouth, with: .color(ink.opacity(0.55)), style: StrokeStyle(lineWidth: s * 0.014, lineCap: .round))
             var w = Path()
             for side in [-1.0, 1.0] {
                 for k in [-1.0, 0.0, 1.0] {
-                    w.move(to: CGPoint(x: side * s * 0.14, y: s * 0.15 + k * s * 0.02))
-                    w.addLine(to: CGPoint(x: side * s * 0.4, y: s * 0.15 + k * s * 0.07))
+                    w.move(to: CGPoint(x: side * s * 0.14, y: s * 0.16 + k * s * 0.02))
+                    w.addQuadCurve(to: CGPoint(x: side * s * 0.42, y: s * 0.15 + k * s * 0.08),
+                                   control: CGPoint(x: side * s * 0.28, y: s * 0.13 + k * s * 0.04))
                 }
             }
-            ctx.stroke(w, with: .color(.white.opacity(0.75)), style: StrokeStyle(lineWidth: s * 0.014, lineCap: .round))
+            ctx.stroke(w, with: .color(.white.opacity(0.7)), style: StrokeStyle(lineWidth: s * 0.014, lineCap: .round))
         case "dog":
             let patch = mix(base, Color(hex: "#6B3F22"), 0.62)
             ctx.fill(oval(s * 0.17, s * 0.0, s * 0.3, s * 0.34, rot: 0.2), with: .color(patch.opacity(0.9)))   // eye patch
@@ -321,13 +341,25 @@ struct FaceView: View {
                               cornerRadius: s * 0.05), with: .color(pink))
             }
         case "hamster":
+            let gold = mix(base, Color(hex: "#C98A3C"), 0.7)
+            ctx.fill(oval(0, -s * 0.28, s * 0.66, s * 0.36), with: .color(gold.opacity(0.92)))               // golden cap
+            ctx.fill(oval(-s * 0.08, -s * 0.36, s * 0.2, s * 0.08, rot: -0.3), with: .color(.white.opacity(0.28)))
             for side in [-1.0, 1.0] {
-                ctx.fill(oval(side * s * 0.3, s * 0.16, s * 0.22, s * 0.18), with: .color(pink.opacity(0.55)))
+                ctx.fill(oval(side * s * 0.31, s * 0.17, s * 0.27, s * 0.22), with: .color(pink.opacity(0.5)))  // stuffed cheeks
+                ctx.fill(oval(side * s * 0.27, s * 0.13, s * 0.09, s * 0.05, rot: -0.4 * side), with: .color(.white.opacity(0.3)))
             }
-            ctx.fill(oval(0, s * 0.11, s * 0.06, s * 0.04), with: .color(pink))
+            ctx.fill(oval(0, s * 0.1, s * 0.07, s * 0.045), with: .color(pink))
+            var wh = Path()
             for side in [-1.0, 1.0] {
-                ctx.fill(Path(roundedRect: CGRect(x: side > 0 ? 0 : -s * 0.035, y: s * 0.14, width: s * 0.035, height: s * 0.06),
-                              cornerRadius: s * 0.01), with: .color(.white))
+                for k in [-1.0, 1.0] {
+                    wh.move(to: CGPoint(x: side * s * 0.2, y: s * 0.17 + k * s * 0.01))
+                    wh.addLine(to: CGPoint(x: side * s * 0.42, y: s * 0.17 + k * s * 0.06))
+                }
+            }
+            ctx.stroke(wh, with: .color(.white.opacity(0.6)), style: StrokeStyle(lineWidth: s * 0.012, lineCap: .round))
+            for side in [-1.0, 1.0] {
+                ctx.fill(Path(roundedRect: CGRect(x: side > 0 ? 0 : -s * 0.04, y: s * 0.14, width: s * 0.04, height: s * 0.07),
+                              cornerRadius: s * 0.012), with: .color(.white))
             }
         default: break
         }
