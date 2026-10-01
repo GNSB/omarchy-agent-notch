@@ -47,6 +47,9 @@ struct NotchRoot: View {
             case .answer: AnswerBody(m: m).transition(.opacity)
             case .custom: CustomBody(m: m).transition(.opacity)
             }
+            if [.alert, .input, .answer].contains(m.mode) {
+                UsageCard(m: m).padding(.horizontal, 22).padding(.bottom, 12)
+            }
         }
         .frame(width: width)
         .background(NotchShape(radius: m.mode == .collapsed ? 12 : 26).fill(m.notchColor))

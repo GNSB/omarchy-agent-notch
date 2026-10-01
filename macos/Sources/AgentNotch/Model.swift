@@ -230,13 +230,13 @@ final class NotchModel: ObservableObject {
         pollState(force: false)
         let t = Date().timeIntervalSince1970
         if Int(t) != Int(now) { now = t }
-        if mode == .expanded { refreshUsageIfStale(t) }
+        if mode != .collapsed && mode != .custom { refreshUsageIfStale(t) }
     }
 
     // MARK: usage (context of the focused session + tokens this month)
 
     private func refreshUsageIfStale(_ t: Double) {
-        let sid = (focus.flatMap { $0.agent == "claude" ? $0.ident : nil }) ?? ""
+        let sid = ((alertAgent ?? answerAgent ?? focus).flatMap { $0.agent == "claude" ? $0.ident : nil }) ?? ""
         guard sid != usageKey || t - usageStamp > 20 else { return }
         usageKey = sid
         usageStamp = t
