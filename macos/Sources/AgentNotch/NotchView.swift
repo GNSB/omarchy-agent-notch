@@ -60,6 +60,17 @@ struct NotchRoot: View {
                 .onAppear { m.hitSize = g.size }
                 .onChange(of: g.size) { m.hitSize = $0 }
         })
+        .overlay(alignment: .bottomTrailing) {
+            if m.mode != .collapsed {
+                Button { AppDelegate.shared?.showClient() } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 11, weight: .bold))
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(Color.white.opacity(0.14)))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .contentShape(Circle())
+                }.buttonStyle(.plain).help("Open client").padding(8)
+            }
+        }
         .contentShape(Rectangle())
         .onHover { m.setHover($0) }
         .coordinateSpace(name: "notch")
@@ -85,8 +96,20 @@ struct NotchRoot: View {
             FaceView(mood: main.map { m.mood($0) } ?? "sleep", tint: m.tint(main), size: 22, glowAlways: true,
                      style: m.style(main), accessory: m.gear(main), reaction: m.reaction(main))
                 .frame(width: 26, height: 26)
+                .overlay(alignment: .topTrailing) {
+                    if m.hasDraft && m.mode != .input {
+                        Text(m.attachments.isEmpty ? "•" : "\(m.attachments.count)")
+                            .font(.system(size: 8, weight: .bold)).foregroundStyle(.black)
+                            .frame(minWidth: 12, minHeight: 12).background(Circle().fill(m.claudeColor))
+                            .offset(x: 4, y: -2)
+                    }
+                }
                 .contentShape(Rectangle())
                 .onTapGesture { m.openInput() }
+            Spacer(minLength: 0)
+            Color.clear.frame(width: m.geometry.hasNotch ? m.geometry.notchW : 100)
+                .contentShape(Rectangle())
+                .onTapGesture { AppDelegate.shared?.showClient() }
             Spacer(minLength: 0)
             let cluster = m.cluster
             LazyVGrid(columns: [GridItem(.fixed(12), spacing: 4), GridItem(.fixed(12), spacing: 4)], spacing: 4) {
@@ -210,6 +233,7 @@ private struct FocusCard: View {
                     Text(m.tr("state." + mood)).font(.system(size: 11, weight: .medium))
                         .padding(.horizontal, 7).padding(.vertical, 2)
                         .background(Capsule().fill(tone.opacity(0.2))).foregroundStyle(tone)
+                    ModelBadge(a: a)
                     Spacer()
                     Text(m.ago(a.since)).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
@@ -257,7 +281,7 @@ private struct Chip: View {
             FaceView(mood: mood, tint: m.miniTint(a), size: 16, mini: true, style: m.style(a)).frame(width: 18, height: 18)
             VStack(alignment: .leading, spacing: 0) {
                 Text(m.displayName(a)).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                Text(m.tr("state." + mood)).font(.system(size: 10))
+                Text(m.tr("state." + mood) + (a.model.isEmpty ? "" : " · " + a.model)).font(.system(size: 10))
                     .foregroundStyle(NotchModel.stateColor[mood] ?? .gray)
             }
             Spacer(minLength: 0)
@@ -313,23 +337,33 @@ private struct AlertBody: View {
 
 // MARK: - ask input
 
-private struct AttachmentStrip: View {
+/// Pasted images as thumbnails; paste (⌘V) again to add more, × removes one.
+struct AttachmentStrip: View {
     @ObservedObject var m: NotchModel
+    var size: CGFloat = 46
     var body: some View {
         if !m.attachments.isEmpty {
-            HStack(spacing: 6) {
-                ForEach(m.attachments, id: \.self) { p in
-                    HStack(spacing: 5) {
-                        Image(systemName: "photo").font(.system(size: 10))
-                        Text((p as NSString).lastPathComponent).lineLimit(1).frame(maxWidth: 120)
-                        Button { m.attachments.removeAll { $0 == p } } label: { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)) }
-                            .buttonStyle(.plain)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(m.attachments, id: \.self) { p in
+                        ZStack(alignment: .topTrailing) {
+                            Group {
+                                if let img = NSImage(contentsOfFile: p) { Image(nsImage: img).resizable().scaledToFill() }
+                                else { Image(systemName: "photo").foregroundStyle(.secondary) }
+                            }
+                            .frame(width: size, height: size)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.white.opacity(0.15), lineWidth: 1))
+                            .help((p as NSString).lastPathComponent)
+                            Button { withAnimation(.smooth(duration: 0.2)) { m.attachments.removeAll { $0 == p } } } label: {
+                                Image(systemName: "xmark").font(.system(size: 7, weight: .black))
+                                    .frame(width: 16, height: 16).background(Circle().fill(Color.black.opacity(0.8)))
+                                    .foregroundStyle(.white)
+                            }.buttonStyle(.plain).offset(x: 5, y: -5)
+                        }
                     }
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Capsule().fill(Color.white.opacity(0.08)))
-                }
-                Spacer(minLength: 0)
+                    Text("\(m.attachments.count) · ⌘V to add").font(.system(size: 10)).foregroundStyle(.secondary)
+                }.padding(.top, 6).padding(.trailing, 6)
             }
         }
     }
@@ -337,8 +371,8 @@ private struct AttachmentStrip: View {
 
 private struct InputBody: View {
     @ObservedObject var m: NotchModel
-    @State private var text = ""
     @FocusState private var focused: Bool
+    private var text: String { m.draft }
 
     var body: some View {
         VStack(spacing: 10) {
@@ -346,9 +380,9 @@ private struct InputBody: View {
                 FaceView(mood: text.isEmpty ? "idle" : "thinking", tint: m.tint(m.mainClaude), size: 34, glowAlways: true,
                          style: m.style(m.mainClaude), accessory: m.gear(m.mainClaude))
                     .frame(width: 40, height: 40)
-                TextField(m.tr("ask.placeholder", ["name": m.chatAgents.first { $0.id == m.askAgent }?.name ?? m.assistantName]), text: $text, axis: .vertical)
+                TextField(m.tr("ask.placeholder", ["name": m.chatAgents.first { $0.id == m.askAgent }?.name ?? m.assistantName]), text: $m.draft, axis: .vertical)
                     .textFieldStyle(.plain).lineLimit(1...5).focused($focused)
-                    .onSubmit { m.send(text); text = "" }
+                    .onSubmit { m.send(text); m.draft = "" }
                     .padding(.top, 10)
             }
             AttachmentStrip(m: m)
@@ -373,9 +407,10 @@ private struct InputBody: View {
                         .padding(.horizontal, 9).padding(.vertical, 4)
                         .background(Capsule().fill(Color.white.opacity(0.08)))
                 }.buttonStyle(.plain)
+                ModelPicker(m: m, agent: m.askAgent)
                 Spacer()
                 Text(m.tr("ask.hint")).font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.7))
-                Button { m.send(text); text = "" } label: {
+                Button { m.send(text); m.draft = "" } label: {
                     Image(systemName: "arrow.up").font(.system(size: 12, weight: .bold))
                         .frame(width: 26, height: 26)
                         .background(Circle().fill(text.trimmingCharacters(in: .whitespaces).isEmpty
@@ -387,7 +422,7 @@ private struct InputBody: View {
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 18).fill(m.cardColor))
         .padding(.horizontal, 14).padding(.bottom, 14).padding(.top, 2)
-        .onExitCommand { text = ""; m.closeInput() }
+        .onExitCommand { m.discardDraft() }
         .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { focused = true } }
     }
 }
@@ -408,6 +443,7 @@ private struct AnswerBody: View {
                     FaceView(mood: mood, tint: m.tint(a), size: 26, glowAlways: true,
                              style: m.style(a), accessory: m.gear(a)).frame(width: 30, height: 30)
                     Text(a.task).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                    ModelBadge(a: a)
                     Spacer()
                     Button { m.openTerminal(a) } label: {
                         HStack(spacing: 6) {
@@ -440,6 +476,7 @@ private struct AnswerBody: View {
                 }
                 .frame(maxHeight: 240)
                 AttachmentStrip(m: m)
+                ModelPicker(m: m, agent: a.agent, chat: a.key)
                 HStack {
                     TextField(m.tr("answer.reply", ["name": m.assistantName]), text: $reply)
                         .textFieldStyle(.plain).focused($focused)
@@ -708,5 +745,53 @@ private struct DetectBody: View {
         .background(RoundedRectangle(cornerRadius: 18).fill(m.cardColor))
         .padding(.horizontal, 14).padding(.bottom, 14).padding(.top, 2)
         .onExitCommand { m.closeDetect() }
+    }
+}
+
+
+/// Which model the router picked, and how: "Haiku · auto" (classified), "· short" (skipped the
+/// classifier), orange "· fallback" when the router failed and the default tier was used.
+struct ModelBadge: View {
+    let a: Agent
+    var body: some View {
+        if !a.model.isEmpty {
+            let bad = a.route == "fallback"
+            let tone = bad ? Color(hex: "#F5A524") : Color.secondary
+            HStack(spacing: 4) {
+                Image(systemName: bad ? "exclamationmark.triangle.fill" : "arrow.triangle.branch")
+                    .font(.system(size: 9, weight: .bold))
+                Text(a.model.capitalized + (a.route.isEmpty ? "" : " · " + a.route))
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(Capsule().fill(bad ? tone.opacity(0.2) : Color.white.opacity(0.1)))
+            .foregroundStyle(tone)
+        }
+    }
+}
+
+struct ModelPicker: View {
+    @ObservedObject var m: NotchModel
+    let agent: String
+    /// Set for an existing chat: the pick is remembered for that chat. nil = the next new chat.
+    var chat: String? = nil
+    var body: some View {
+        let choices = m.modelChoices(agent)
+        if !choices.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 5) {
+                    ForEach(choices, id: \.self) { c in
+                        let on = (chat.map { m.chatModel($0) } ?? m.askModel) == c
+                        Text(c == "auto" ? "Auto" : c.capitalized).font(.system(size: 10, weight: .semibold))
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(Capsule().fill(on ? m.claudeColor.opacity(0.28) : Color.white.opacity(0.07)))
+                            .overlay(Capsule().stroke(on ? m.claudeColor.opacity(0.6) : .clear, lineWidth: 1))
+                            .foregroundStyle(on ? m.claudeColor : Color.secondary)
+                            .contentShape(Capsule())
+                            .onTapGesture { withAnimation(.smooth(duration: 0.2)) { if let chat { m.setChatModel(chat, c) } else { m.askModel = c } } }
+                    }
+                }
+            }
+        }
     }
 }

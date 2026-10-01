@@ -40,6 +40,7 @@ I18N = os.environ.get("AGENT_NOTCH_I18N") or next(
      if os.path.exists(p)),
     os.path.expanduser("~/.config/omarchy/plugins/myzk.notch/i18n.json"))
 LOCK = os.path.join(STATE_DIR, ".lock")
+CHATS = os.path.join(STATE_DIR, "chats")
 
 STATES = ("idle", "thinking", "working", "upload", "restart", "waiting", "done", "error")
 ACTIVE = ("thinking", "working", "upload", "restart", "waiting")
@@ -96,13 +97,46 @@ def _load():
         return {}
 
 
+def _ttl(a):
+    if a.get("state") in ACTIVE:
+        return MAX_AGE
+    # Chats started from the notch/client are conversations you come back to: keep them for days.
+    if a.get("source") == "notch":
+        return float(cfg("chatTTLDays", 7)) * 86400
+    return IDLE_TTL
+
+
+def _chat_file(key):
+    return os.path.join(CHATS, key.replace(":", "-").replace("/", "_") + ".json")
+
+
+def _drop_chat(key):
+    try:
+        os.remove(_chat_file(key))
+    except OSError:
+        pass
+
+
+def append_turn(agent, ident, prompt, answer, failed=False):
+    """Full transcript of a notch chat, one file per chat (summary.json only keeps the last turn)."""
+    os.makedirs(CHATS, exist_ok=True)
+    path = _chat_file(f"{agent}:{ident}")
+    turns = _read_json(path) if os.path.exists(path) else []
+    turns = turns if isinstance(turns, list) else []
+    turns.append({"q": prompt, "a": answer, "t": time.time(), "error": bool(failed)})
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(turns[-200:], f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
 def _save(agents):
     now = time.time()
-    agents = {
-        k: a for k, a in agents.items()
-        if a.get("agent") == "grok"
-        or now - a.get("updated", 0) < (MAX_AGE if a.get("state") in ACTIVE else IDLE_TTL)
-    }
+    kept = {k: a for k, a in agents.items()
+            if a.get("agent") == "grok" or now - a.get("updated", 0) < _ttl(a)}
+    for k in agents.keys() - kept.keys():
+        _drop_chat(k)
+    agents = kept
     tmp = SUMMARY + ".tmp"
     with open(tmp, "w") as f:
         json.dump({"updated": now, "agents": agents}, f, ensure_ascii=False)
@@ -117,6 +151,7 @@ def update(agent, ident, state=None, remove=False, **fields):
         key = f"{agent}:{ident}"
         if remove:
             agents.pop(key, None)
+            _drop_chat(key)
         else:
             now = time.time()
             entry = agents.get(key, {"agent": agent, "id": ident, "since": now})
@@ -129,6 +164,61 @@ def update(agent, ident, state=None, remove=False, **fields):
             entry["updated"] = now
             agents[key] = entry
         _save(agents)
+
+
+# ------------------------------------------------------- model discovery
+
+_COST_ORDER = ("haiku", "sonnet", "opus", "fable")   # cheapest first, for Claude families
+
+
+def _claude_models():
+    """Aliases the installed Claude Code advertises in `--model` help, plus any family seen in
+    recent session transcripts (so a new family shows up without touching this file)."""
+    found = {"haiku", "sonnet", "opus"}
+    try:
+        out = subprocess.run([_claude_bin(), "--help"], capture_output=True, text=True, timeout=15).stdout
+        block = re.search(r"--model <model>(.*?)(?=\n\s+--\w)", out, re.S)
+        if block:
+            found |= set(re.findall(r"'([a-z][a-z0-9.-]*)'", block.group(1)))
+    except Exception:
+        pass
+    root = os.path.expanduser("~/.claude/projects")
+    try:
+        recent = sorted((os.path.join(d, f) for d, _, fs in os.walk(root) for f in fs if f.endswith(".jsonl")),
+                        key=os.path.getmtime, reverse=True)[:15]
+        for path in recent:
+            with open(path, "rb") as f:
+                f.seek(max(0, os.path.getsize(path) - 100_000))
+                for m in re.findall(r'"model":"claude-([a-z]+)-', f.read().decode("utf-8", "ignore")):
+                    found.add(m)
+    except OSError:
+        pass
+    known = [m for m in _COST_ORDER if m in found]
+    return known + sorted(found - set(known))
+
+
+def _codex_models():
+    """Models Codex itself reports for this account (its own models cache), in its priority order."""
+    try:
+        with open(os.path.expanduser("~/.codex/models_cache.json")) as f:
+            rows = json.load(f).get("models", [])
+    except (OSError, ValueError):
+        return []
+    rows = [r for r in rows if r.get("visibility", "list") == "list" and r.get("slug")]
+    return [r["slug"] for r in sorted(rows, key=lambda r: r.get("priority", 99))]
+
+
+def discover_models(agent):
+    """Models you can pick for an agent: scanned automatically for Claude and Codex, or listed by
+    hand in config.json under "models": {"agent": ["a", "b"]} for any other CLI."""
+    manual = (cfg("models", {}) or {}).get(agent)
+    if isinstance(manual, list) and manual:
+        return [str(m) for m in manual]
+    if agent == "claude":
+        return _claude_models()
+    if agent == "codex":
+        return _codex_models()
+    return []
 
 
 # ---------------------------------------------------------- claude hook
@@ -178,6 +268,43 @@ def _is_upload(tool, inp):
     return tool.startswith("mcp__") and re.search(r"upload|create_file|update_file|share", tool) is not None
 
 
+def _model_family(model):
+    """claude-opus-5-5 -> "opus", "haiku" -> "haiku"; unknown ids are shown as-is."""
+    m = re.search(r"haiku|sonnet|opus|fable", str(model).lower())
+    return m.group(0) if m else str(model or "")
+
+
+def _transcript_model(path):
+    """Model of the last assistant turn, read from the tail of the session transcript."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 200_000))
+            lines = f.read().decode("utf-8", "ignore").splitlines()
+    except OSError:
+        return ""
+    for l in reversed(lines):
+        if '"model"' in l:
+            try:
+                m = (json.loads(l).get("message") or {}).get("model")
+            except ValueError:
+                continue
+            if m and not m.startswith("<"):
+                return _model_family(m)
+    return ""
+
+
+def _runner_alive(entry):
+    pid = entry.get("runner") if entry.get("source") == "notch" else None
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def claude_hook():
     try:
         ev = json.load(sys.stdin)
@@ -188,6 +315,12 @@ def claude_hook():
     name = os.path.basename(cwd.rstrip("/")) or cwd
     kind = ev.get("hook_event_name", "")
     common = {"name": name, "cwd": cwd}
+    # Show the real model for every session (typed in a terminal or asked from the notch).
+    model = _model_family(ev["model"]) if ev.get("model") else (
+        _transcript_model(ev["transcript_path"])
+        if kind in ("UserPromptSubmit", "Stop") and ev.get("transcript_path") else "")
+    if model:
+        common["model"] = model
 
     if kind == "SessionEnd":
         # Notch tasks outlive their process: the ask runner writes the answer.
@@ -216,7 +349,10 @@ def claude_hook():
         msg = ev.get("message") or tr("waitingPermission")
         update("claude", sid, "waiting", detail=_short(msg), **common)
     elif kind == "Stop":
-        update("claude", sid, "done", detail=tr("readyNext"), **common)
+        # Notch runs are finished by their ask runner, together with the answer (unless the
+        # chat was later continued in a terminal and no runner is alive).
+        if not _runner_alive(_load().get(f"claude:{sid}", {})):
+            update("claude", sid, "done", detail=tr("readyNext"), **common)
 
 
 # ------------------------------------------------------------ mcp server
@@ -314,13 +450,46 @@ def _claude_bin():
         "~/.local/share/mise/installs/claude/latest/claude")
 
 
-def ask(prompt, resume=None, new_id=None, agent="claude"):
+_ROUTER_PROMPT = (
+    "Classify the difficulty of the user's task for an AI coding assistant. Reply with ONE word:\n"
+    "simple  = quick question, lookup, small edit, rename, summary, status check\n"
+    "medium  = typical feature, bug fix, multi-file change, explanation needing code reading\n"
+    "complex = architecture, large refactor, hard debugging, security review, deep multi-step work\n"
+    "Task:\n")
+
+
+def route_model(prompt):
+    """Cheap middleware: Haiku classifies the task, then we pick the model to run it.
+    Returns (model alias for --model or None, how) where how is auto|short|fallback|off."""
+    r = cfg("modelRouter", {})
+    if not r.get("enabled", True):
+        return None, "off"
+    tiers = {"simple": r.get("simple", "haiku"), "medium": r.get("medium", "sonnet"),
+             "complex": r.get("complex", "opus")}
+    fallback = tiers.get(r.get("fallback", "medium"))
+    # Skip the classifier call for trivially short prompts: it would cost more than it saves.
+    if len(prompt.strip()) < int(r.get("minChars", 40)):
+        return tiers["simple"], "short"
+    try:
+        out = subprocess.run(
+            [_claude_bin(), "-p", _ROUTER_PROMPT + prompt[:4000], "--model", r.get("router", "haiku"),
+             "--tools", "", "--system-prompt", "You are a task classifier. Output one word only.",
+             "--disable-slash-commands", "--no-session-persistence"],
+            capture_output=True, text=True, timeout=int(r.get("timeout", 30)))
+        word = re.search(r"simple|medium|complex", out.stdout.lower())
+        return (tiers[word.group(0)], "auto") if word else (fallback, "fallback")
+    except Exception:
+        return fallback, "fallback"
+
+
+def ask(prompt, resume=None, new_id=None, agent="claude", model=None):
     if agent == "codex":
-        return ask_codex(prompt, resume, new_id)
+        return ask_codex(prompt, resume, new_id, model)
     if agent != "claude":
         return ask_generic(agent, prompt, resume, new_id)
     sid = resume or new_id or str(uuid.uuid4())
     cwd = os.path.expanduser(os.environ.get("MYZK_NOTCH_CWD", "~"))
+    session = ((_load().get(f"claude:{sid}") or {}).get("session") or sid) if resume else sid
     update("claude", sid, "thinking", name=_short(prompt, 22), cwd=cwd, source="notch",
            task=_short(prompt, 90), detail=tr("thinking"), answer="")
 
@@ -333,11 +502,21 @@ def ask(prompt, resume=None, new_id=None, agent="claude"):
     devnull = os.open(os.devnull, os.O_RDWR)
     for fd in (0, 1, 2):
         os.dup2(devnull, fd)
+    update("claude", sid, runner=os.getpid())
 
     args = [_claude_bin(), "-p", prompt, "--output-format", "json",
             "--permission-mode", cfg("permissionMode", "auto"),
             "--append-system-prompt", cfg("systemPrompt", "") or tr("systemPrompt")]
-    args += ["--resume", sid] if resume else ["--session-id", sid, "-n", "Notch"]
+    args += ["--resume", session] if resume else ["--session-id", sid, "-n", "Notch"]
+    if model:  # chosen by the user in the notch: bypass the router
+        args += ["--model", model]
+        update("claude", sid, model=model, route="manual")
+    elif not resume:  # follow-ups keep the model (and prompt cache) of the session
+        update("claude", sid, detail=tr("routing"))
+        model, how = route_model(prompt)
+        if model:
+            args += ["--model", model]
+            update("claude", sid, model=model, route=how, detail=tr("thinking"))
     log = os.path.join(STATE_DIR, "ask.log")
     try:
         out = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=3600)
@@ -352,15 +531,17 @@ def ask(prompt, resume=None, new_id=None, agent="claude"):
             with open(log, "a") as f:
                 f.write(f"--- {time.ctime()} rc={out.returncode}\n{out.stdout[-2000:]}\n{out.stderr[-2000:]}\n")
         real = data.get("session_id")
-        if real and real != sid:  # resumed runs may fork a new id
-            update("claude", sid, remove=True)
-            sid = real
+        if real:  # resumed runs may fork a new id: the chat keeps its key, resume follows the real one
+            session = real
     except Exception as e:  # timeout, missing binary…
         answer, failed = tr("couldNotComplete", error=e), True
     first = next((l for l in answer.splitlines() if l.strip()), answer)
     first = re.sub(r"[*_`#>]+", "", first).strip()
+    if session != sid:
+        update("claude", session, remove=True)   # the hooks' copy of the forked session
+    append_turn("claude", sid, prompt, answer, failed)
     update("claude", sid, "error" if failed else "done", source="notch", name=_short(prompt, 22),
-           cwd=cwd, answer=answer[:8000], detail=_short(first.lstrip("#*- ")))
+           cwd=cwd, answer=answer[:8000], detail=_short(first.lstrip("#*- ")), session=session, runner=0)
     os._exit(0)
 
 
@@ -373,7 +554,7 @@ def _codex_bin():
     return p if os.access(p, os.X_OK) else None
 
 
-def ask_codex(prompt, resume=None, new_id=None):
+def ask_codex(prompt, resume=None, new_id=None, model=None):
     """Same contract as ask(), through `codex exec`. The notch keeps its own id for the
     chat; Codex's real thread id is stored in the entry's "thread" field for follow-ups."""
     sid = resume or new_id or str(uuid.uuid4())
@@ -381,7 +562,8 @@ def ask_codex(prompt, resume=None, new_id=None):
     thread = (_load().get(f"codex:{sid}") or {}).get("thread") if resume else None
     label = "Codex · " + _short(prompt, 16)
     update("codex", sid, "thinking", name=label, cwd=cwd, source="notch",
-           task=_short(prompt, 90), detail=tr("thinking"), answer="")
+           task=_short(prompt, 90), detail=tr("thinking"), answer="",
+           **({"model": model, "route": "manual"} if model else {}))
     if os.fork():
         return
     os.setsid()
@@ -406,6 +588,8 @@ def ask_codex(prompt, resume=None, new_id=None):
         if not thread:   # `-i` is greedy: images first, flags after, prompt via stdin ("-")
             for img in re.findall(r"\[attached image: ([^\]]+)\]", prompt):
                 args += ["-i", img]
+        if model:
+            args += ["-m", model]
         args += ["--json", "--skip-git-repo-check", "-c", f'sandbox_mode="{cfg("codexSandbox", "workspace-write")}"',
                  "-o", outfile, "-"]
         out = subprocess.run(args, cwd=cwd, input=prompt, capture_output=True, text=True, timeout=3600)
@@ -435,6 +619,7 @@ def ask_codex(prompt, resume=None, new_id=None):
         answer, failed = tr("couldNotComplete", error=e), True
     first = next((l for l in answer.splitlines() if l.strip()), answer)
     first = re.sub(r"[*_`#>]+", "", first).strip()
+    append_turn("codex", sid, prompt, answer, failed)
     update("codex", sid, "error" if failed else "done", source="notch", name=label, cwd=cwd,
            answer=answer[:8000], detail=_short(first.lstrip("#*- ")), thread=found)
     os._exit(0)
@@ -515,6 +700,7 @@ def ask_generic(agent, prompt, resume=None, new_id=None):
     first = next((l for l in answer.splitlines() if l.strip()), answer)
     first = re.sub(r"[*_`#>]+", "", first).strip()
     hist = (history + [[prompt[:1500], answer[:3000]]])[-6:] if not failed else history
+    append_turn(agent, sid, prompt, answer, failed)
     update(agent, sid, "error" if failed else "done", source="notch", name=label, cwd=cwd,
            answer=answer[:8000], detail=_short(first.lstrip("#*- ")), history=hist)
     os._exit(0)
@@ -609,8 +795,7 @@ def _version(path):
 def detect_agents():
     from concurrent.futures import ThreadPoolExecutor
     dirs = _search_dirs()
-    state = _load().get("agents", {}) if isinstance(_load(), dict) else {}
-    live = {a.get("agent") for a in state.values() if isinstance(a, dict)}
+    live = {a.get("agent") for a in _load().values() if isinstance(a, dict)}
     try:
         settings = open(os.path.expanduser("~/.claude/settings.json")).read()
     except OSError:
@@ -629,7 +814,8 @@ def detect_agents():
         connected = ("myzk-agents" in settings) if aid == "claude" else (aid in live)
         return {"id": aid, "name": name, "installed": installed, "path": path or ("/Applications/" + app if app else ""),
                 "version": _version(path) if path else "", "used": used, "connected": connected and installed,
-                "chat": bool(path) and (aid in ("claude", "codex") or _headless_cmd(aid) is not None)}
+                "chat": bool(path) and (aid in ("claude", "codex") or _headless_cmd(aid) is not None),
+                "models": discover_models(aid) if path else []}
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         return list(ex.map(probe, KNOWN_AGENTS))
@@ -647,7 +833,7 @@ def main():
             watch()
         elif cmd == "ask" and len(args) >= 2:
             opts = dict(zip(args[2::2], args[3::2]))
-            ask(args[1], opts.get("--resume"), opts.get("--id"), opts.get("--agent", "claude"))
+            ask(args[1], opts.get("--resume"), opts.get("--id"), opts.get("--agent", "claude"), opts.get("--model"))
         elif cmd == "detect":
             print(json.dumps(detect_agents()))
         elif cmd == "list":

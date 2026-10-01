@@ -44,7 +44,7 @@ func shortPath(_ p: String) -> String { p.hasPrefix(home) ? "~" + p.dropFirst(ho
 struct Agent: Identifiable, Equatable {
     var key: String, agent: String, ident: String, name: String
     var state: String, task: String, detail: String, cwd: String
-    var answer: String, source: String
+    var answer: String, source: String, model: String = "", route: String = "", session: String = ""
     var since: Double, updated: Double
     var id: String { key }
 }
@@ -52,6 +52,7 @@ struct Agent: Identifiable, Equatable {
 struct DetectedAgent: Identifiable, Equatable {
     var id: String, name: String, path: String, version: String
     var installed: Bool, connected: Bool, chat: Bool
+    var models: [String] = []
 }
 
 struct UsageInfo: Equatable {
@@ -157,7 +158,7 @@ final class NotchModel: ObservableObject {
     @Published var customMood = "idle"
     @Published var reactions: [String: String] = [:]
     @Published var attachments: [String] = []
-    @Published var askAgent = "claude"
+    @Published var askAgent = "claude" { didSet { askModel = "auto" } }
     @Published var detectOpen = false
     @Published var detecting = false
     @Published var detected: [DetectedAgent] = []
@@ -229,6 +230,7 @@ final class NotchModel: ObservableObject {
 
     func start() {
         cfg.reloadIfNeeded()
+        loadChatModels()
         rescan()
         pollState(force: true)
         Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
@@ -307,7 +309,7 @@ final class NotchModel: ObservableObject {
             let row = Agent(key: key, agent: s(a["agent"]), ident: s(a["id"]),
                             name: s(a["name"] ?? a["id"]), state: a["state"] == nil ? "idle" : s(a["state"]),
                             task: s(a["task"]), detail: s(a["detail"]), cwd: s(a["cwd"]),
-                            answer: s(a["answer"]), source: s(a["source"]),
+                            answer: s(a["answer"]), source: s(a["source"]), model: s(a["model"]), route: s(a["route"]), session: s(a["session"]),
                             since: d(a["since"]), updated: d(a["updated"]))
             if let prev = old[key] {
                 if prev.detail != row.detail && !prev.detail.isEmpty { hist[key] = prev.detail }
@@ -400,7 +402,21 @@ final class NotchModel: ObservableObject {
 
     // MARK: interaction
 
+    private var pointerInside = false
+
+    /// Opens the notch for a moment (e.g. after the client folds into it) without pinning it:
+    /// it closes on its own unless the pointer is on it.
+    func peek(_ secs: Double = 4) {
+        hoverTask?.cancel()
+        hovered = true
+        hoverTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(secs * 1e9))
+            if !Task.isCancelled, self?.pointerInside == false { self?.hovered = false; self?.pickedKey = "" }
+        }
+    }
+
     func setHover(_ on: Bool) {
+        pointerInside = on
         hoverTask?.cancel()
         if on {
             hovered = true
@@ -414,14 +430,19 @@ final class NotchModel: ObservableObject {
 
     func openInput() {
         customOpen = false
+        let resuming = hasDraft          // coming back to a draft: keep its model and folder
+        if !inputOpen && !resuming { newChat() }
         rescan()
         alertKey = ""
         answerKey = ""
         inputOpen = true
+        let keep = askDir
         var dirs = ["~"]
-        for g in cfg.list("projectDirs", ["~/Projects/*"]) { dirs += expandGlob(g).map(shortPath) }
+        for g in cfg.list("projectDirs", ["~/Projects/*"]) {
+            for d in expandGlob(g).map(shortPath) where !dirs.contains(d) { dirs.append(d) }
+        }
         askDirs = dirs
-        askDirIndex = 0
+        askDirIndex = resuming ? (dirs.firstIndex(of: keep) ?? 0) : 0
         AppDelegate.shared?.makeKey()
     }
 
@@ -442,7 +463,29 @@ final class NotchModel: ObservableObject {
         else { openInput() }
     }
 
-    func closeInput() { inputOpen = false; attachments = [] }
+    /// Closing the input (e.g. clicking elsewhere to grab another screenshot) keeps the draft:
+    /// text and pasted images are still there when it opens again. Esc discards them.
+    func closeInput() { inputOpen = false }
+    func discardDraft() { draft = ""; attachments = []; inputOpen = false }
+    @Published var draft = ""
+    var hasDraft: Bool { !attachments.isEmpty || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    // MARK: chat transcripts (written by the backend, one file per chat)
+
+    struct Turn: Identifiable { let id: Int; let q: String; let a: String; let error: Bool }
+    private var turnCache: [String: (stamp: Date?, turns: [Turn])] = [:]
+    func turns(_ a: Agent) -> [Turn] {
+        let path = home + "/.local/state/myzk-agents/chats/" + a.key.replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: "/", with: "_") + ".json"
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+        if let c = turnCache[a.key], c.stamp == stamp { return c.turns }
+        let raw = (FileManager.default.contents(atPath: path).flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [[String: Any]] ?? []
+        let t = raw.enumerated().map { i, d in
+            Turn(id: i, q: d["q"] as? String ?? "", a: d["a"] as? String ?? "", error: d["error"] as? Bool ?? false)
+        }
+        turnCache[a.key] = (stamp, t)
+        return t
+    }
     func openCustom() {
         detectOpen = false
         alertKey = ""; answerKey = ""; inputOpen = false
@@ -529,7 +572,8 @@ final class NotchModel: ObservableObject {
         return list.map { d in
             DetectedAgent(id: d["id"] as? String ?? "", name: d["name"] as? String ?? "", path: d["path"] as? String ?? "",
                           version: d["version"] as? String ?? "", installed: d["installed"] as? Bool ?? false,
-                          connected: d["connected"] as? Bool ?? false, chat: d["chat"] as? Bool ?? false)
+                          connected: d["connected"] as? Bool ?? false, chat: d["chat"] as? Bool ?? false,
+                          models: d["models"] as? [String] ?? [])
         }
     }
 
@@ -560,7 +604,7 @@ final class NotchModel: ObservableObject {
         let pb = NSPasteboard.general
         let files = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? [])
             .filter { Self.imageExts.contains($0.pathExtension.lowercased()) }
-        if !files.isEmpty { attachments += files.map(\.path); return true }
+        if !files.isEmpty { attachments += files.map(\.path).filter { !attachments.contains($0) }; return true }
         // every image on the clipboard, not just the first (e.g. several copied from Preview/Photos)
         let imgs = pb.readObjects(forClasses: [NSImage.self]) as? [NSImage] ?? []
         guard pb.string(forType: .string) == nil, !imgs.isEmpty else { return false }
@@ -584,22 +628,66 @@ final class NotchModel: ObservableObject {
             + attachments.map { "[attached image: \($0)]" }.joined(separator: "\n")
     }
 
+    /// Model picked by hand for the next ask: "auto" lets the router decide.
+    @Published var askModel = "auto"
+    /// Models the scan found for an agent ("auto" first, so the default is never a surprise).
+    func modelChoices(_ agent: String) -> [String] {
+        let found = detected.first { $0.id == agent }?.models ?? []
+        return found.isEmpty ? [] : ["auto"] + found
+    }
+    private func args(_ model: String) -> [String] { model == "auto" ? [] : ["--model", model] }
+
+    // A model picked for a chat sticks to that chat (across restarts) until changed; new chats start on auto.
+    private let chatModelsFile = home + "/.local/state/myzk-agents/chat-models.json"
+    @Published private(set) var chatModels: [String: String] = [:]
+    private func loadChatModels() {
+        if let d = FileManager.default.contents(atPath: chatModelsFile),
+           let map = try? JSONSerialization.jsonObject(with: d) as? [String: String] { chatModels = map }
+    }
+    func chatModel(_ key: String) -> String { chatModels[key] ?? "auto" }
+    func setChatModel(_ key: String, _ model: String) {
+        chatModels[key] = model == "auto" ? nil : model
+        if let d = try? JSONSerialization.data(withJSONObject: chatModels, options: [.prettyPrinted, .sortedKeys]) {
+            try? d.write(to: URL(fileURLWithPath: chatModelsFile))
+        }
+    }
+    /// Fresh chat → back to auto.
+    func newChat() { askModel = "auto" }
+
+    /// Starts a new conversation from the client window; returns its key so the UI can select it.
+    func start(_ text: String, agent: String, dir: String) -> String? {
+        let t = withAttachments(text)
+        guard !t.isEmpty else { return nil }
+        let id = UUID().uuidString.lowercased()
+        let key = agent + ":" + id
+        setChatModel(key, askModel)
+        runBackend(["ask", t, "--id", id, "--agent", agent] + args(askModel), cwd: (dir as NSString).expandingTildeInPath)
+        askModel = "auto"
+        return key
+    }
+
     func send(_ text: String) {
         let t = withAttachments(text)
         guard !t.isEmpty else { return }
         let id = UUID().uuidString.lowercased()
         let dir = (askDir as NSString).expandingTildeInPath
         let who = chatAgents.contains { $0.id == askAgent } ? askAgent : "claude"
-        runBackend(["ask", t, "--id", id, "--agent", who], cwd: dir)
+        setChatModel(who + ":" + id, askModel)
+        runBackend(["ask", t, "--id", id, "--agent", who] + args(askModel), cwd: dir)
+        askModel = "auto"
         pickedKey = who + ":" + id
         inputOpen = false
     }
 
     func reply(_ text: String) {
         guard let a = answerAgent else { return }
+        reply(text, to: a)
+    }
+
+    func reply(_ text: String, to a: Agent) {
         let t = withAttachments(text)
         guard !t.isEmpty else { return }
-        runBackend(["ask", t, "--resume", a.ident, "--agent", a.agent], cwd: a.cwd.isEmpty ? home : a.cwd)
+        runBackend(["ask", t, "--resume", a.ident, "--agent", a.agent] + args(chatModel(a.key)), cwd: a.cwd.isEmpty ? home : a.cwd)
     }
 
     func forget(_ a: Agent) {
@@ -625,7 +713,7 @@ final class NotchModel: ObservableObject {
         let dir = a.cwd.isEmpty ? home : a.cwd
         let cmd = a.agent == "codex"
             ? "cd \(shellQuote(dir)) && codex resume --last"
-            : "cd \(shellQuote(dir)) && \(claude) --resume \(a.ident)"
+            : "cd \(shellQuote(dir)) && \(claude) --resume \(a.session.isEmpty ? a.ident : a.session)"
         let term = cfg.str("terminal", "")
         let p = Process()
         if term.isEmpty || term.contains("xdg-terminal-exec") {
