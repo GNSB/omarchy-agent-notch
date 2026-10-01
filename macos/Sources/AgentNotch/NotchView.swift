@@ -478,7 +478,7 @@ private struct CustomBody: View {
         Button(action: action) {
             HStack(spacing: 4) {
                 if on { Image(systemName: "checkmark").font(.system(size: 8, weight: .bold)) }
-                Text(title.capitalized).font(.system(size: 11, weight: .medium))
+                Text(title.capitalized).font(.system(size: 11, weight: .medium)).lineLimit(1).fixedSize()
             }
             .padding(.horizontal, 10).padding(.vertical, 5)
             .background(Capsule().fill(on ? m.claudeColor.opacity(0.26) : Color.white.opacity(0.07)))
@@ -500,6 +500,20 @@ private struct CustomBody: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(on ? m.claudeColor.opacity(0.7) : .clear, lineWidth: 1.2))
         .contentShape(Rectangle())
         .onTapGesture { withAnimation(.smooth(duration: 0.2)) { m.setStyle(st) } }
+    }
+
+    private func stepButton(_ icon: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: 9, weight: .bold))
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(Color.white.opacity(0.08)))
+                .foregroundStyle(.secondary).contentShape(Circle())
+        }.buttonStyle(.plain)
+    }
+
+    private func stepMood(_ d: Int) {
+        let i = moods.firstIndex(of: m.customMood) ?? 0
+        m.customMood = moods[(i + d + moods.count) % moods.count]
     }
 
     // MARK: body
@@ -530,18 +544,18 @@ private struct CustomBody: View {
                         .frame(width: 92, height: 92)
                         .contentShape(Rectangle())
                         .onTapGesture { m.poke("preview") }
-                    Menu {
-                        ForEach(moods, id: \.self) { mo in Button(m.tr("state." + mo)) { m.customMood = mo } }
-                    } label: {
+                    HStack(spacing: 5) {
+                        stepButton("chevron.left") { stepMood(-1) }
                         HStack(spacing: 5) {
                             Circle().fill(moodTone).frame(width: 6, height: 6)
-                            Text(m.tr("state." + m.customMood)).font(.system(size: 11, weight: .medium))
-                            Image(systemName: "chevron.up.chevron.down").font(.system(size: 8))
+                            Text(m.tr("state." + m.customMood)).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                                .id(m.customMood).transition(.opacity)
                         }
-                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .frame(maxWidth: .infinity).padding(.vertical, 6)
                         .background(Capsule().fill(Color.white.opacity(0.08)))
-                        .foregroundStyle(.primary)
-                    }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                        .animation(.smooth(duration: 0.2), value: m.customMood)
+                        stepButton("chevron.right") { stepMood(1) }
+                    }.padding(.horizontal, 10)
                     HStack(spacing: 5) {
                         chip(m.tr("custom.annoy"), false) { m.react("preview", "annoyed", 1.6) }
                         chip(m.tr("custom.dizzy"), false) { m.react("preview", "dizzy", 2.4) }
@@ -558,7 +572,7 @@ private struct CustomBody: View {
                             HStack(spacing: 6) { ForEach(faceStyles, id: \.self) { styleTile($0) } }
                         }
                         section(m.tr("custom.gear")) {
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 78), spacing: 5)], alignment: .leading, spacing: 5) {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 5)], alignment: .leading, spacing: 5) {
                                 chip(m.tr("custom.none"), gear.isEmpty) { m.clearGear() }
                                 ForEach(faceAccessories, id: \.self) { a in chip(a, gear.contains(a)) { m.toggleGear(a) } }
                             }
