@@ -7,6 +7,15 @@ straight from the notch.
 
 ▶️ **[Watch the demo](assets/demo.mp4)**
 
+
+## Which version?
+
+Run `./setup.sh` and pick **Omarchy** (Linux, Quickshell plugin) or **macOS** (native SwiftUI app in `macos/`).
+It defaults to whatever matches your machine; `./setup.sh omarchy` / `./setup.sh mac` skips the question.
+Both share the same backend (`bin/myzk-agents`), hooks, `config.json` and `i18n.json`. The macOS app needs
+Swift (`xcode-select --install`) and supports faces, accessories, moods, pointer reactions and the Customize
+panel; Omarchy-only bits are `placement`, `screen` and the `qs ... ipc` commands.
+
 ## Features
 
 - **Collapsed**: an orb for your Claude session on the left, a 2×2 cluster of other agents on the right.

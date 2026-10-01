@@ -33,8 +33,11 @@ STATE_DIR = os.path.join(
 SUMMARY = os.path.join(STATE_DIR, "summary.json")
 CONFIG = os.environ.get("AGENT_NOTCH_CONFIG") or os.path.expanduser(
     "~/.config/agent-notch/config.json")
-I18N = os.environ.get("AGENT_NOTCH_I18N") or os.path.expanduser(
-    "~/.config/omarchy/plugins/myzk.notch/i18n.json")
+I18N = os.environ.get("AGENT_NOTCH_I18N") or next(
+    (p for p in (os.path.expanduser("~/.config/agent-notch/i18n.json"),
+                 os.path.expanduser("~/.config/omarchy/plugins/myzk.notch/i18n.json"))
+     if os.path.exists(p)),
+    os.path.expanduser("~/.config/omarchy/plugins/myzk.notch/i18n.json"))
 LOCK = os.path.join(STATE_DIR, ".lock")
 
 STATES = ("idle", "thinking", "working", "upload", "restart", "waiting", "done", "error")
