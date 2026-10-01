@@ -14,7 +14,41 @@ command -v python3 >/dev/null || { echo "Needs python3"; exit 1; }
 echo "→ building"
 swift build -c release
 mkdir -p "$BIN" "$CONF"
-install -m 755 .build/release/AgentNotch "$BIN/agent-notch"
+# A real .app with a stable bundle id + signature: macOS (TCC) remembers the folder/file
+# permissions you grant it across rebuilds. Ad-hoc binaries get a new identity every build
+# and are asked again each time.
+APP="$HOME/Applications/Agent Notch.app"
+mkdir -p "$APP/Contents/MacOS"
+install -m 755 .build/release/AgentNotch "$APP/Contents/MacOS/agent-notch"
+cat > "$APP/Contents/Info.plist" <<IP
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>$LABEL</string>
+  <key>CFBundleName</key><string>Agent Notch</string>
+  <key>CFBundleExecutable</key><string>agent-notch</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSDesktopFolderUsageDescription</key><string>Your agents read and edit projects on the Desktop.</string>
+  <key>NSDocumentsFolderUsageDescription</key><string>Your agents read and edit projects in Documents.</string>
+  <key>NSDownloadsFolderUsageDescription</key><string>Your agents read files in Downloads.</string>
+  <key>NSRemovableVolumesUsageDescription</key><string>Your agents read files on external drives.</string>
+  <key>NSNetworkVolumesUsageDescription</key><string>Your agents read files on network drives.</string>
+</dict></plist>
+IP
+# Sign with a real identity if there is one (Apple Development / Developer ID), else ad-hoc.
+IDENT="${AGENT_NOTCH_SIGN:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Developer ID Application|Apple Development/ {print $2; exit}')}"
+if [ -n "$IDENT" ]; then
+  codesign --force --sign "$IDENT" --identifier "$LABEL" "$APP" && echo "→ signed with: $IDENT"
+else
+  codesign --force --sign - --identifier "$LABEL" "$APP"
+  echo "→ no signing identity found: ad-hoc (macOS may ask for permissions again after each rebuild)"
+fi
+rm -f "$BIN/agent-notch"
+ln -s "$APP/Contents/MacOS/agent-notch" "$BIN/agent-notch"
 install -m 755 "$ROOT/bin/myzk-agents" "$BIN/myzk-agents"
 install -m 755 "$ROOT/bin/claude-usage" "$BIN/claude-usage"
 cp "$ROOT/plugin/i18n.json" "$CONF/i18n.json"
@@ -61,7 +95,7 @@ cat > "$PLIST" <<PL
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>$LABEL</string>
-  <key>ProgramArguments</key><array><string>$BIN/agent-notch</string></array>
+  <key>ProgramArguments</key><array><string>$APP/Contents/MacOS/agent-notch</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ProcessType</key><string>Interactive</string>

@@ -34,6 +34,63 @@ final class GitModel: ObservableObject {
 
     func scan(_ globs: [String]) { repos = Self.candidates(globs).map(shortPath) }
 
+    /// Repos the open chat actually worked in (its transcript mentions their files), most used first.
+    @Published var related: [String] = []
+    private var followGen = 0
+
+    /// Follows a chat: its working dir if that's a repo, else the repo it touched the most
+    /// (a chat started in ~ that `cd`s into a project still shows that project).
+    func follow(ids: [String], dir: String, text: String) {
+        followGen += 1; let me = followGen
+        let d = (dir.isEmpty ? "~" : dir as NSString).expandingTildeInPath
+        Task.detached {
+            let touched = Self.touchedRepos(ids: ids, text: text)
+            let own = Self.repoRoot(d)
+            await MainActor.run {
+                guard me == self.followGen else { return }
+                self.related = touched
+                self.focus(own ?? touched.first ?? d)
+            }
+        }
+    }
+
+    nonisolated static func repoRoot(_ path: String) -> String? {
+        var p = (path as NSString).standardizingPath
+        let fm = FileManager.default
+        while p.count > 1 {
+            if fm.fileExists(atPath: p + "/.git") { return p == home ? nil : p }   // a dotfiles repo in ~ would match everything
+            p = (p as NSString).deletingLastPathComponent
+        }
+        return nil
+    }
+
+    nonisolated static func touchedRepos(ids: [String], text: String) -> [String] {
+        var blob = text
+        for id in Set(ids) where !id.isEmpty {
+            for f in expandGlob(home + "/.claude/projects/*/").map({ $0 + "/" + id + ".jsonl" })
+            where FileManager.default.fileExists(atPath: f) {
+                guard let h = FileHandle(forReadingAtPath: f) else { continue }
+                let size = (try? h.seekToEnd()) ?? 0
+                try? h.seek(toOffset: size > 3_000_000 ? size - 3_000_000 : 0)
+                blob += String(decoding: h.readDataToEndOfFile(), as: UTF8.self)
+                try? h.close()
+            }
+        }
+        let pattern = "(?:" + NSRegularExpression.escapedPattern(for: home) + "|~)(/[A-Za-z0-9._\\-]+)+"
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return [] }
+        var counts: [String: Int] = [:], cache: [String: String?] = [:]
+        let ns = blob as NSString
+        for m in re.matches(in: blob, range: NSRange(location: 0, length: ns.length)) {
+            var p = ns.substring(with: m.range)
+            if p.hasPrefix("~") { p = home + p.dropFirst() }
+            let dir = (p as NSString).deletingLastPathComponent
+            let root: String?
+            if let c = cache[dir] { root = c } else { root = repoRoot(p); cache[dir] = root }
+            if let root { counts[root, default: 0] += 1 }
+        }
+        return counts.sorted { $0.value > $1.value }.map(\.key)
+    }
+
     func focus(_ dir: String) {
         let d = (dir.isEmpty ? "~" : dir as NSString).expandingTildeInPath
         guard d != asked || root.isEmpty else { return }

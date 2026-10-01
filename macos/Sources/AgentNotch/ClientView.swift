@@ -26,7 +26,18 @@ struct ClientView: View {
                         chat
                         if inspector {
                             Rectangle().fill(Color.white.opacity(0.07)).frame(width: 1)
-                            ScrollView { GitPanel(m: m, g: g).padding(14) }.frame(width: 300)
+                            ScrollView {
+                                VStack(spacing: 12) {
+                                    if g.related.count > 1 || (!g.root.isEmpty && !g.related.isEmpty && g.related.first != g.root) {
+                                        Menu {
+                                            ForEach(g.related, id: \.self) { r in Button(shortPath(r)) { g.focus(r) } }
+                                        } label: { Label("Repos in this chat · \(g.related.count)", systemImage: "square.stack.3d.up") }
+                                            .menuStyle(.borderlessButton).font(.system(size: 11, weight: .semibold))
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                    GitPanel(m: m, g: g)
+                                }.padding(14)
+                            }.frame(width: 300)
                                 .background(Color.black.opacity(0.12))
                         }
                     }
@@ -40,11 +51,12 @@ struct ClientView: View {
         .environment(\.colorScheme, .dark)
         .onAppear {
             m.rescan(); refreshDirs()
-            g.scan(m.cfg.list("projectDirs", ["~/Projects/*"])); g.focus(chatDir)
+            g.scan(m.cfg.list("projectDirs", ["~/Projects/*"])); followChat()
         }
-        .onChange(of: selected) { _ in g.focus(chatDir) }
-        .onChange(of: m.askDirIndex) { _ in if current == nil { g.focus(chatDir) } }
-        .onChange(of: m.askDirs) { _ in if current == nil { g.focus(chatDir) } }
+        .onChange(of: selected) { _ in followChat() }
+        .onChange(of: current?.updated) { _ in followChat() }
+        .onChange(of: m.askDirIndex) { _ in if current == nil { followChat() } }
+        .onChange(of: m.askDirs) { _ in if current == nil { followChat() } }
     }
 
     // MARK: top bar
@@ -270,6 +282,13 @@ struct ClientView: View {
             .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 1))
         }
         .padding(.horizontal, 20).padding(.bottom, 16).padding(.top, 6)
+    }
+
+    /// Points the git inspector at the open chat (or the folder picked for a new one).
+    private func followChat() {
+        guard let a = current else { g.related = []; g.focus(chatDir); return }
+        let text = m.turns(a).map { $0.q + "\n" + $0.a }.joined(separator: "\n") + a.answer
+        g.follow(ids: [a.ident, a.session], dir: chatDir, text: text)
     }
 
     private var canSend: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !m.attachments.isEmpty }
