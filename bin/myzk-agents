@@ -317,6 +317,8 @@ def _claude_bin():
 def ask(prompt, resume=None, new_id=None, agent="claude"):
     if agent == "codex":
         return ask_codex(prompt, resume, new_id)
+    if agent != "claude":
+        return ask_generic(agent, prompt, resume, new_id)
     sid = resume or new_id or str(uuid.uuid4())
     cwd = os.path.expanduser(os.environ.get("MYZK_NOTCH_CWD", "~"))
     update("claude", sid, "thinking", name=_short(prompt, 22), cwd=cwd, source="notch",
@@ -438,6 +440,86 @@ def ask_codex(prompt, resume=None, new_id=None):
     os._exit(0)
 
 
+# One-shot headless commands for other agent CLIs ({prompt} is replaced). Override or add
+# any of them in config.json under "chatCommands": {"gemini": ["gemini", "-p", "{prompt}"]}.
+# Claude and Codex have dedicated runners above; the rest are untested defaults.
+HEADLESS = {
+    "gemini":   ["gemini", "-p", "{prompt}"],
+    "grok":     ["grok", "-p", "{prompt}"],
+    "opencode": ["opencode", "run", "{prompt}"],
+    "cursor":   ["cursor-agent", "-p", "{prompt}"],
+    "qwen":     ["qwen", "-p", "{prompt}"],
+    "amp":      ["amp", "-x", "{prompt}"],
+    "goose":    ["goose", "run", "-t", "{prompt}"],
+    "copilot":  ["copilot", "-p", "{prompt}"],
+    "aider":    ["aider", "--message", "{prompt}", "--yes-always", "--no-pretty"],
+}
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def _headless_cmd(agent):
+    custom = (cfg("chatCommands", {}) or {}).get(agent)
+    return custom if isinstance(custom, list) and custom else HEADLESS.get(agent)
+
+
+def _find_bin(agent):
+    row = next((r for r in KNOWN_AGENTS if r[0] == agent), None)
+    if not row:
+        return None
+    for d in _search_dirs():
+        for exe in row[2]:
+            p = os.path.join(d, exe)
+            if os.access(p, os.X_OK) and not os.path.isdir(p):
+                return p
+    return None
+
+
+def ask_generic(agent, prompt, resume=None, new_id=None):
+    """Chat with any other agent CLI one shot at a time. Follow-ups carry the earlier turns
+    in the prompt, so they 'remember' even if the CLI has no session resume."""
+    sid = resume or new_id or str(uuid.uuid4())
+    cwd = os.path.expanduser(os.environ.get("MYZK_NOTCH_CWD", "~"))
+    name = next((r[1] for r in KNOWN_AGENTS if r[0] == agent), agent)
+    label = f"{name} · " + _short(prompt, 14)
+    history = (_load().get(f"{agent}:{sid}") or {}).get("history") or [] if resume else []
+    update(agent, sid, "thinking", name=label, cwd=cwd, source="notch",
+           task=_short(prompt, 90), detail=tr("thinking"), answer="")
+    if os.fork():
+        return
+    os.setsid()
+    if os.fork():
+        os._exit(0)
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
+
+    answer, failed = "", True
+    try:
+        template, binary = _headless_cmd(agent), _find_bin(agent)
+        if not template or not binary:
+            raise RuntimeError(f"{agent}: no headless command or binary found")
+        full = prompt
+        if history:
+            full = "Conversation so far:\n" + "\n".join(f"User: {u}\nAssistant: {a}" for u, a in history[-6:]) \
+                   + f"\n\nUser: {prompt}"
+        args = [binary] + [a.replace("{prompt}", full) for a in template[1:]]
+        out = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=3600, stdin=subprocess.DEVNULL)
+        answer = ANSI_RE.sub("", out.stdout).strip()
+        failed = out.returncode != 0 or not answer
+        if failed:
+            with open(os.path.join(STATE_DIR, "ask.log"), "a") as f:
+                f.write(f"--- {time.ctime()} {agent} rc={out.returncode}\n{out.stdout[-2000:]}\n{out.stderr[-2000:]}\n")
+            answer = answer or ANSI_RE.sub("", out.stderr).strip()[-600:] or tr("noAnswer")
+    except Exception as e:
+        answer, failed = tr("couldNotComplete", error=e), True
+    first = next((l for l in answer.splitlines() if l.strip()), answer)
+    first = re.sub(r"[*_`#>]+", "", first).strip()
+    hist = (history + [[prompt[:1500], answer[:3000]]])[-6:] if not failed else history
+    update(agent, sid, "error" if failed else "done", source="notch", name=label, cwd=cwd,
+           answer=answer[:8000], detail=_short(first.lstrip("#*- ")), history=hist)
+    os._exit(0)
+
+
 # ----------------------------------------------------------------- views
 
 COLOR = {"idle": "90", "thinking": "36", "working": "32", "waiting": "33;1",
@@ -546,7 +628,8 @@ def detect_agents():
         installed = bool(path or app or used)     # a leftover config dir still means it was set up here
         connected = ("myzk-agents" in settings) if aid == "claude" else (aid in live)
         return {"id": aid, "name": name, "installed": installed, "path": path or ("/Applications/" + app if app else ""),
-                "version": _version(path) if path else "", "used": used, "connected": connected and installed}
+                "version": _version(path) if path else "", "used": used, "connected": connected and installed,
+                "chat": bool(path) and (aid in ("claude", "codex") or _headless_cmd(aid) is not None)}
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         return list(ex.map(probe, KNOWN_AGENTS))

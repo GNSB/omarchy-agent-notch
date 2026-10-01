@@ -51,7 +51,7 @@ struct Agent: Identifiable, Equatable {
 
 struct DetectedAgent: Identifiable, Equatable {
     var id: String, name: String, path: String, version: String
-    var installed: Bool, connected: Bool
+    var installed: Bool, connected: Bool, chat: Bool
 }
 
 struct UsageInfo: Equatable {
@@ -414,6 +414,7 @@ final class NotchModel: ObservableObject {
 
     func openInput() {
         customOpen = false
+        rescan()
         alertKey = ""
         answerKey = ""
         inputOpen = true
@@ -485,10 +486,11 @@ final class NotchModel: ObservableObject {
         cfg.save("claudeColor", hex); cfgVersion += 1
     }
 
-    /// Agents the notch can chat with headlessly (Claude always; Codex when it was detected).
+    /// Every detected agent the notch knows how to chat with. Nothing is hard-coded: install
+    /// Gemini or Codex and it shows up in the picker after the next scan.
     var chatAgents: [(id: String, name: String)] {
-        var l = [("claude", assistantName)]
-        if detected.contains(where: { $0.id == "codex" && $0.installed }) { l.append(("codex", "Codex")) }
+        var l: [(id: String, name: String)] = [("claude", assistantName)]
+        for d in detected where d.chat && d.id != "claude" { l.append((d.id, d.name)) }
         return l
     }
 
@@ -527,7 +529,7 @@ final class NotchModel: ObservableObject {
         return list.map { d in
             DetectedAgent(id: d["id"] as? String ?? "", name: d["name"] as? String ?? "", path: d["path"] as? String ?? "",
                           version: d["version"] as? String ?? "", installed: d["installed"] as? Bool ?? false,
-                          connected: d["connected"] as? Bool ?? false)
+                          connected: d["connected"] as? Bool ?? false, chat: d["chat"] as? Bool ?? false)
         }
     }
 
