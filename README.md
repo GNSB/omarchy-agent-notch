@@ -113,7 +113,7 @@ no shell restart needed. Missing keys fall back to defaults.
 | `accessories` | `{}` | per-bot override by name, e.g. `{"Researcher": "glasses"}` |
 | `greetOnStart` | `true` | play the hello animation when the shell starts |
 | `projectDirs` | `["~/Projects/*"]` | globs the `+` button cycles through as working dir for asks (and the repos the macOS Git tab lists) |
-| `modelRouter` | enabled | auto model pick for new asks: `{"enabled": true, "router": "haiku", "simple": "haiku", "medium": "sonnet", "complex": "opus", "fallback": "medium", "minChars": 40}` |
+| `modelRouter` | enabled | auto model pick for new asks (see *Model routing*): `{"enabled": true, "rules": true, "router": "haiku", "simple": "haiku", "medium": "sonnet", "complex": "opus", "fallback": "medium", "minChars": 40, "longChars": 1500, "cacheTTL": 86400, "escalate": true, "maxEscalations": 2, "words": {}}` |
 | `models` | auto-detected | models offered per agent, e.g. `{"gemini": ["gemini-2.5-pro"]}` (Claude and Codex are scanned) |
 | `chatCommands` | built-in | headless command per agent CLI, e.g. `{"gemini": ["gemini", "-p", "{prompt}"]}` |
 | `chatTTLDays` | `7` | how long finished notch/client chats are kept (terminal sessions fade after 2 h) |
@@ -158,6 +158,27 @@ the faces in `plugin/AgentFace.qml`. After editing QML run `omarchy restart shel
 
 Environment overrides: `AGENT_NOTCH_CONFIG` (config path), `AGENT_NOTCH_BACKEND` (backend path),
 `AGENT_NOTCH_I18N` (strings file for the backend).
+
+## Model routing
+
+New asks from the notch or the client (with the model left on *Auto*) go through a small decision tree in
+`myzk-agents`, cheapest step first:
+
+1. **rules** — free: keywords (es/en), length, file paths, numbered steps and images pick `simple`, `medium`
+   or `complex` when the signal is clear (`short` = trivially short prompt). Add your own words with
+   `modelRouter.words: {"complex": ["\\bkubernetes"]}`.
+2. **cache** — the same prompt classified in the last `cacheTTL` seconds reuses that tier.
+3. **auto** — only what the rules weren't sure about is sent to Haiku to classify.
+4. **fallback** — if the classifier fails, the `fallback` tier is used.
+
+A routed ask that **fails** climbs one tier (haiku → sonnet → opus, up to `maxEscalations`) in a fresh session;
+the badge then reads *escalated ↑*. Follow-ups keep the chat's model, and a model picked by hand skips the router.
+Every routed ask is logged to `~/.local/state/myzk-agents/router.jsonl`:
+
+```bash
+myzk-agents route "refactoriza el módulo de pagos"   # dry run of the rules: tier + signals
+myzk-agents router-stats                             # stages, tiers, failures and escalations per starting tier
+```
 
 ## IPC
 

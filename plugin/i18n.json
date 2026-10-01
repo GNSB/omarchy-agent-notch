@@ -123,7 +123,15 @@
     "sum.compute": "Compute",
     "sum.expected": "Paste expected checksum",
     "sum.match": "Match",
-    "sum.nomatch": "Does not match"
+    "sum.nomatch": "Does not match",
+    "escalating": "Didn't work out, trying {model}…",
+    "route.rules": "rules",
+    "route.short": "short",
+    "route.cache": "cache",
+    "route.auto": "auto",
+    "route.fallback": "fallback",
+    "route.manual": "manual",
+    "route.escalated": "escalated ↑"
   },
   "es": {
     "state.idle": "en espera",
@@ -249,6 +257,14 @@
     "sum.compute": "Calcular",
     "sum.expected": "Pega el checksum esperado",
     "sum.match": "Coincide",
-    "sum.nomatch": "No coincide"
+    "sum.nomatch": "No coincide",
+    "escalating": "No resultó, probando con {model}…",
+    "route.rules": "reglas",
+    "route.short": "corto",
+    "route.cache": "caché",
+    "route.auto": "auto",
+    "route.fallback": "respaldo",
+    "route.manual": "manual",
+    "route.escalated": "escalado ↑"
   }
 }
