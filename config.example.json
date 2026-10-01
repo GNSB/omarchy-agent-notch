@@ -9,6 +9,7 @@
   "faceStyle": "orb",
   "accessory": [],
   "accessories": {},
+  "petTap": "chat",
 
   "projectDirs": ["~/Projects/*"],
   "claudeCommand": "claude",
