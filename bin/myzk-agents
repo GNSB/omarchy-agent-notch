@@ -8,7 +8,7 @@ myzk.notch overlay watches. Writers:
   myzk-agents mcp                  stdio MCP server; Grok Bots call report_status
   myzk-agents set AGENT ID STATE [--name N] [--task T] [--detail D]
   myzk-agents rm AGENT ID
-  myzk-agents ask PROMPT [--resume SID | --id NEW_UUID]   run Claude headless (notch input)
+  myzk-agents ask PROMPT [--resume SID | --id NEW_UUID] [--agent claude|codex]   run an agent headless (notch input)
   myzk-agents detect               JSON: which coding agents are installed on this machine
 
 Readers:
@@ -314,7 +314,9 @@ def _claude_bin():
         "~/.local/share/mise/installs/claude/latest/claude")
 
 
-def ask(prompt, resume=None, new_id=None):
+def ask(prompt, resume=None, new_id=None, agent="claude"):
+    if agent == "codex":
+        return ask_codex(prompt, resume, new_id)
     sid = resume or new_id or str(uuid.uuid4())
     cwd = os.path.expanduser(os.environ.get("MYZK_NOTCH_CWD", "~"))
     update("claude", sid, "thinking", name=_short(prompt, 22), cwd=cwd, source="notch",
@@ -357,6 +359,82 @@ def ask(prompt, resume=None, new_id=None):
     first = re.sub(r"[*_`#>]+", "", first).strip()
     update("claude", sid, "error" if failed else "done", source="notch", name=_short(prompt, 22),
            cwd=cwd, answer=answer[:8000], detail=_short(first.lstrip("#*- ")))
+    os._exit(0)
+
+
+def _codex_bin():
+    for d in _search_dirs():
+        p = os.path.join(d, "codex")
+        if os.access(p, os.X_OK) and not os.path.isdir(p):
+            return p
+    p = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
+    return p if os.access(p, os.X_OK) else None
+
+
+def ask_codex(prompt, resume=None, new_id=None):
+    """Same contract as ask(), through `codex exec`. The notch keeps its own id for the
+    chat; Codex's real thread id is stored in the entry's "thread" field for follow-ups."""
+    sid = resume or new_id or str(uuid.uuid4())
+    cwd = os.path.expanduser(os.environ.get("MYZK_NOTCH_CWD", "~"))
+    thread = (_load().get(f"codex:{sid}") or {}).get("thread") if resume else None
+    label = "Codex · " + _short(prompt, 16)
+    update("codex", sid, "thinking", name=label, cwd=cwd, source="notch",
+           task=_short(prompt, 90), detail=tr("thinking"), answer="")
+    if os.fork():
+        return
+    os.setsid()
+    if os.fork():
+        os._exit(0)
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
+
+    log = os.path.join(STATE_DIR, "ask.log")
+    outfile = os.path.join(STATE_DIR, f"codex-{sid}.txt")
+    answer, failed, found = "", True, thread
+    try:
+        binary = _codex_bin()
+        if not binary:
+            raise RuntimeError("codex not found")
+        try:
+            os.remove(outfile)
+        except OSError:
+            pass
+        args = [binary, "exec"] + (["resume", thread] if thread else [])
+        if not thread:   # `-i` is greedy: images first, flags after, prompt via stdin ("-")
+            for img in re.findall(r"\[attached image: ([^\]]+)\]", prompt):
+                args += ["-i", img]
+        args += ["--json", "--skip-git-repo-check", "-c", f'sandbox_mode="{cfg("codexSandbox", "workspace-write")}"',
+                 "-o", outfile, "-"]
+        out = subprocess.run(args, cwd=cwd, input=prompt, capture_output=True, text=True, timeout=3600)
+        last_msg = ""
+        for line in out.stdout.splitlines():
+            if not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("type") == "thread.started" and ev.get("thread_id"):
+                found = ev["thread_id"]
+            item = ev.get("item") or {}
+            if ev.get("type") == "item.completed" and item.get("type") == "agent_message":
+                last_msg = item.get("text") or last_msg
+        try:
+            answer = open(outfile).read().strip() or last_msg.strip()
+        except OSError:
+            answer = last_msg.strip()
+        failed = out.returncode != 0 or not answer
+        if failed:
+            with open(log, "a") as f:
+                f.write(f"--- {time.ctime()} codex rc={out.returncode}\n{out.stdout[-2000:]}\n{out.stderr[-2000:]}\n")
+            answer = answer or tr("noAnswer")
+    except Exception as e:
+        answer, failed = tr("couldNotComplete", error=e), True
+    first = next((l for l in answer.splitlines() if l.strip()), answer)
+    first = re.sub(r"[*_`#>]+", "", first).strip()
+    update("codex", sid, "error" if failed else "done", source="notch", name=label, cwd=cwd,
+           answer=answer[:8000], detail=_short(first.lstrip("#*- ")), thread=found)
     os._exit(0)
 
 
@@ -486,7 +564,7 @@ def main():
             watch()
         elif cmd == "ask" and len(args) >= 2:
             opts = dict(zip(args[2::2], args[3::2]))
-            ask(args[1], opts.get("--resume"), opts.get("--id"))
+            ask(args[1], opts.get("--resume"), opts.get("--id"), opts.get("--agent", "claude"))
         elif cmd == "detect":
             print(json.dumps(detect_agents()))
         elif cmd == "list":

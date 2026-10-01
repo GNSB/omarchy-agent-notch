@@ -261,6 +261,14 @@ private struct Chip: View {
                     .foregroundStyle(NotchModel.stateColor[mood] ?? .gray)
             }
             Spacer(minLength: 0)
+            if a.source == "notch" {   // a chat you opened here: close it with one click
+                Button { m.forget(a) } label: {
+                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                        .frame(width: 18, height: 18)
+                        .background(Circle().fill(Color.white.opacity(0.1)))
+                        .foregroundStyle(.secondary).contentShape(Circle())
+                }.buttonStyle(.plain).help("Close chat")
+            }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 12).fill(m.cardColor))
@@ -338,12 +346,27 @@ private struct InputBody: View {
                 FaceView(mood: text.isEmpty ? "idle" : "thinking", tint: m.tint(m.mainClaude), size: 34, glowAlways: true,
                          style: m.style(m.mainClaude), accessory: m.gear(m.mainClaude))
                     .frame(width: 40, height: 40)
-                TextField(m.tr("ask.placeholder", ["name": m.assistantName]), text: $text, axis: .vertical)
+                TextField(m.tr("ask.placeholder", ["name": m.chatAgents.first { $0.id == m.askAgent }?.name ?? m.assistantName]), text: $text, axis: .vertical)
                     .textFieldStyle(.plain).lineLimit(1...5).focused($focused)
                     .onSubmit { m.send(text); text = "" }
                     .padding(.top, 10)
             }
             AttachmentStrip(m: m)
+            if m.chatAgents.count > 1 {
+                HStack(spacing: 6) {
+                    ForEach(m.chatAgents, id: \.id) { a in
+                        let on = m.askAgent == a.id
+                        Text(a.name).font(.system(size: 11, weight: .semibold))
+                            .padding(.horizontal, 12).padding(.vertical, 5)
+                            .background(Capsule().fill(on ? m.claudeColor.opacity(0.28) : Color.white.opacity(0.07)))
+                            .overlay(Capsule().stroke(on ? m.claudeColor.opacity(0.6) : .clear, lineWidth: 1))
+                            .foregroundStyle(on ? m.claudeColor : Color.secondary)
+                            .contentShape(Capsule())
+                            .onTapGesture { withAnimation(.smooth(duration: 0.2)) { m.askAgent = a.id } }
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
             HStack {
                 Button { m.cycleDir() } label: {
                     Text("+  " + m.askDir).font(.system(size: 11)).foregroundStyle(.secondary)

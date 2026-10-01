@@ -157,6 +157,7 @@ final class NotchModel: ObservableObject {
     @Published var customMood = "idle"
     @Published var reactions: [String: String] = [:]
     @Published var attachments: [String] = []
+    @Published var askAgent = "claude"
     @Published var detectOpen = false
     @Published var detecting = false
     @Published var detected: [DetectedAgent] = []
@@ -228,6 +229,7 @@ final class NotchModel: ObservableObject {
 
     func start() {
         cfg.reloadIfNeeded()
+        rescan()
         pollState(force: true)
         Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -483,6 +485,13 @@ final class NotchModel: ObservableObject {
         cfg.save("claudeColor", hex); cfgVersion += 1
     }
 
+    /// Agents the notch can chat with headlessly (Claude always; Codex when it was detected).
+    var chatAgents: [(id: String, name: String)] {
+        var l = [("claude", assistantName)]
+        if detected.contains(where: { $0.id == "codex" && $0.installed }) { l.append(("codex", "Codex")) }
+        return l
+    }
+
     func openDetect() {
         alertKey = ""; answerKey = ""; inputOpen = false; customOpen = false
         detectOpen = true; pinned = true
@@ -578,8 +587,9 @@ final class NotchModel: ObservableObject {
         guard !t.isEmpty else { return }
         let id = UUID().uuidString.lowercased()
         let dir = (askDir as NSString).expandingTildeInPath
-        runBackend(["ask", t, "--id", id], cwd: dir)
-        pickedKey = "claude:" + id
+        let who = chatAgents.contains { $0.id == askAgent } ? askAgent : "claude"
+        runBackend(["ask", t, "--id", id, "--agent", who], cwd: dir)
+        pickedKey = who + ":" + id
         inputOpen = false
     }
 
@@ -587,7 +597,7 @@ final class NotchModel: ObservableObject {
         guard let a = answerAgent else { return }
         let t = withAttachments(text)
         guard !t.isEmpty else { return }
-        runBackend(["ask", t, "--resume", a.ident], cwd: a.cwd.isEmpty ? home : a.cwd)
+        runBackend(["ask", t, "--resume", a.ident, "--agent", a.agent], cwd: a.cwd.isEmpty ? home : a.cwd)
     }
 
     func forget(_ a: Agent) {
@@ -611,7 +621,9 @@ final class NotchModel: ObservableObject {
     func openTerminal(_ a: Agent) {
         let claude = cfg.str("claudeCommand", "claude")
         let dir = a.cwd.isEmpty ? home : a.cwd
-        let cmd = "cd \(shellQuote(dir)) && \(claude) --resume \(a.ident)"
+        let cmd = a.agent == "codex"
+            ? "cd \(shellQuote(dir)) && codex resume --last"
+            : "cd \(shellQuote(dir)) && \(claude) --resume \(a.ident)"
         let term = cfg.str("terminal", "")
         let p = Process()
         if term.isEmpty || term.contains("xdg-terminal-exec") {
