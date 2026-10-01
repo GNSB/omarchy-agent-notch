@@ -75,7 +75,11 @@
     "custom.style.hamster": "Hamster",
     "usage.session": "Context",
     "usage.month": "Month",
-    "usage.nearly": "Nearly full"
+    "usage.nearly": "Nearly full",
+    "custom.tap": "On tap",
+    "custom.tap.chat": "Open chat",
+    "custom.tap.terminal": "Open terminal",
+    "custom.tap.play": "Play"
   },
   "es": {
     "state.idle": "en espera",
@@ -153,6 +157,10 @@
     "custom.style.hamster": "Hámster",
     "usage.session": "Contexto",
     "usage.month": "Mes",
-    "usage.nearly": "Casi lleno"
+    "usage.nearly": "Casi lleno",
+    "custom.tap": "Al tocar",
+    "custom.tap.chat": "Abrir chat",
+    "custom.tap.terminal": "Abrir terminal",
+    "custom.tap.play": "Jugar"
   }
 }

@@ -413,7 +413,18 @@ final class NotchModel: ObservableObject {
         AppDelegate.shared?.makeKey()
     }
 
-    /// Tapping an agent's face: its conversation if it was started from the notch, else a fresh question.
+    /// What tapping the pet in the agents view does: "chat" | "terminal" | "play".
+    var petTap: String { cfg.str("petTap", "chat") }
+    func setPetTap(_ v: String) { cfg.save("petTap", v); cfgVersion += 1 }
+    func tapPet(_ a: Agent) {
+        switch petTap {
+        case "terminal": openTerminal(a)
+        case "play": poke(a.key)
+        default: openChat(a)
+        }
+    }
+
+    /// Opens an agent's conversation: its conversation if it was started from the notch, else a fresh question.
     func openChat(_ a: Agent) {
         if a.source == "notch" { alertKey = ""; answerKey = a.key; AppDelegate.shared?.makeKey() }
         else { openInput() }

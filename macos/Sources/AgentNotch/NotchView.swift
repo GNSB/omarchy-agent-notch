@@ -195,8 +195,7 @@ private struct FocusCard: View {
                      style: m.style(a), accessory: m.gear(a), reaction: m.reaction(a))
                 .frame(width: 52, height: 52)
                 .contentShape(Rectangle())
-                .onTapGesture { m.openChat(a) }
-                .help(m.tr("ask.button", ["name": m.assistantName]))
+                .onTapGesture { m.tapPet(a) }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(m.displayName(a)).fontWeight(.semibold).lineLimit(1)
@@ -489,6 +488,12 @@ private struct CustomBody: View {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 74), spacing: 5)], alignment: .leading, spacing: 5) {
                             pill(m.tr("custom.none"), gear.isEmpty) { m.clearGear() }
                             ForEach(faceAccessories, id: \.self) { a in pill(a, gear.contains(a)) { m.toggleGear(a) } }
+                        }
+                    }
+                    HStack(spacing: 6) {
+                        Text(m.tr("custom.tap")).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
+                        ForEach(["chat", "terminal", "play"], id: \.self) { a in
+                            pill(m.tr("custom.tap." + a), m.petTap == a) { m.setPetTap(a) }
                         }
                     }
                     if isClaude {
