@@ -413,6 +413,12 @@ final class NotchModel: ObservableObject {
         AppDelegate.shared?.makeKey()
     }
 
+    /// Tapping an agent's face: its conversation if it was started from the notch, else a fresh question.
+    func openChat(_ a: Agent) {
+        if a.source == "notch" { alertKey = ""; answerKey = a.key; AppDelegate.shared?.makeKey() }
+        else { openInput() }
+    }
+
     func closeInput() { inputOpen = false; attachments = [] }
     func openCustom() {
         alertKey = ""; answerKey = ""; inputOpen = false

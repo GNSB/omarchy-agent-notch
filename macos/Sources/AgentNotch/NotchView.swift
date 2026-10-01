@@ -195,7 +195,8 @@ private struct FocusCard: View {
                      style: m.style(a), accessory: m.gear(a), reaction: m.reaction(a))
                 .frame(width: 52, height: 52)
                 .contentShape(Rectangle())
-                .onTapGesture { m.poke(a.key) }
+                .onTapGesture { m.openChat(a) }
+                .help(m.tr("ask.button", ["name": m.assistantName]))
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(m.displayName(a)).fontWeight(.semibold).lineLimit(1)
@@ -217,9 +218,17 @@ private struct FocusCard: View {
                         .id(a.detail).transition(.opacity)
                 }
                 if a.source == "notch" && !a.answer.isEmpty {
-                    Button(m.tr("ask.viewAnswer")) { m.answerKey = a.key; AppDelegate.shared?.makeKey() }
-                        .buttonStyle(.plain).foregroundStyle(m.claudeColor).font(.system(size: 12, weight: .medium))
-                        .padding(.top, 2)
+                    Button { m.answerKey = a.key; AppDelegate.shared?.makeKey() } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "text.bubble").font(.system(size: 12, weight: .semibold))
+                            Text(m.tr("ask.viewAnswer")).font(.system(size: 12, weight: .semibold))
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Capsule().fill(m.claudeColor.opacity(0.24)))
+                        .overlay(Capsule().stroke(m.claudeColor.opacity(0.5), lineWidth: 1))
+                        .foregroundStyle(m.claudeColor)
+                        .contentShape(Capsule())
+                    }.buttonStyle(.plain).padding(.top, 4)
                 }
             }
         }
