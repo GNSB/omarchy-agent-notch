@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""agent-notch-tools — small JSON helpers for the Omarchy notch's client window.
+
+  agent-notch-tools git DIR                     repo status: branch, changes, commits, remotes
+  agent-notch-tools remotes DIR                 reachability of each remote (git ls-remote)
+  agent-notch-tools follow DIR [--id ID ...]    repo of a chat: its cwd if a repo, else the
+                                                repos its transcript touched (most used first)
+  agent-notch-tools repos GLOB ...              git repos under the given globs
+  agent-notch-tools checksum FILE               SHA-256 / SHA-512 / SHA-1 / MD5
+  agent-notch-tools paste DIR                   save clipboard image(s) into DIR (wl-paste)
+
+Read-only except `paste`, which only writes new PNGs into DIR. Same shapes as the
+macOS client's GitModel, so both frontends show the same thing.
+"""
+import concurrent.futures
+import glob
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local/state"), "myzk-agents")
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".tiff", ".bmp"}
+
+
+def out(v):
+    json.dump(v, sys.stdout, ensure_ascii=False)
+    sys.stdout.write("\n")
+
+
+def short(p):
+    return "~" + p[len(HOME):] if p.startswith(HOME) else p
+
+
+def git(args, cwd, timeout=20):
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0",
+               GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=8", LC_ALL="C")
+    try:
+        r = subprocess.run(["git", "-C", cwd] + args, capture_output=True, text=True,
+                           timeout=timeout, env=env)
+        return (r.returncode == 0), (r.stdout if r.returncode == 0 else r.stderr)
+    except Exception as e:
+        return False, str(e)
+
+
+def repo_root(path):
+    p = os.path.abspath(os.path.expanduser(path))
+    while len(p) > 1:
+        if os.path.exists(os.path.join(p, ".git")):
+            return None if p == HOME else p   # a dotfiles repo in ~ would match everything
+        p = os.path.dirname(p)
+    return None
+
+
+def cmd_git(d):
+    d = os.path.expanduser(d or "~")
+    res = {"asked": d, "root": "", "branch": "", "tracking": "", "sync": "", "head": "",
+           "files": [], "commits": [], "remotes": [], "at": time.time()}
+    ok, top = git(["rev-parse", "--show-toplevel"], d)
+    if not ok or not top.strip():
+        return res
+    top = top.strip()
+    res["root"] = top
+    ok, st = git(["status", "--porcelain=v1", "-b"], top)
+    if ok:
+        for i, line in enumerate(st.splitlines()):
+            if i == 0 and line.startswith("## "):
+                t = line[3:]
+                parts = t.split("...")
+                res["branch"] = parts[0].replace("No commits yet on ", "")
+                res["tracking"] = parts[1].split(" [")[0] if len(parts) > 1 else ""
+                m = re.search(r"\[(.*)\]", t)
+                res["sync"] = m.group(1) if m else ""
+            elif len(line) > 3:
+                res["files"].append({"code": line[:2].strip(), "path": line[3:]})
+    ok, h = git(["rev-parse", "--short", "HEAD"], top)
+    res["head"] = h.strip() if ok else ""
+    ok, log = git(["log", "-40", "--pretty=format:%h%x09%s%x09%an%x09%ar"], top)
+    if ok:
+        for line in log.splitlines():
+            p = line.split("\t")
+            if len(p) == 4:
+                res["commits"].append({"hash": p[0], "subject": p[1], "author": p[2], "date": p[3]})
+    ok, rv = git(["remote", "-v"], top)
+    seen = set()
+    for line in rv.splitlines() if ok else []:
+        p = line.split()
+        if len(p) >= 2 and line.endswith("(fetch)") and p[0] not in seen:
+            seen.add(p[0])
+            res["remotes"].append({"name": p[0], "url": p[1]})
+    return res
+
+
+def cmd_remotes(d):
+    top = repo_root(d) or os.path.expanduser(d)
+    ok, rv = git(["remote", "-v"], top)
+    rows, seen = [], set()
+    for line in rv.splitlines() if ok else []:
+        p = line.split()
+        if len(p) >= 2 and line.endswith("(fetch)") and p[0] not in seen:
+            seen.add(p[0])
+            rows.append({"name": p[0], "url": p[1]})
+
+    def check(r):
+        good, msg = git(["ls-remote", "--exit-code", "--heads", r["name"]], top, timeout=12)
+        note = "connected" if good else (msg.strip().splitlines() or ["failed"])[0]
+        return dict(r, ok=good, note=note)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        return list(ex.map(check, rows))
+
+
+def cmd_follow(d, ids):
+    d = os.path.expanduser(d or "~")
+    blob = ""
+    for ident in set(i for i in ids if i):
+        for f in glob.glob(os.path.join(HOME, ".claude/projects/*", ident + ".jsonl")):
+            try:
+                with open(f, "rb") as fh:
+                    size = os.path.getsize(f)
+                    fh.seek(max(0, size - 3_000_000))
+                    blob += fh.read().decode("utf-8", "replace")
+            except OSError:
+                pass
+        for f in glob.glob(os.path.join(STATE, "chats", "*-" + ident + ".json")):
+            try:
+                blob += open(f).read()
+            except OSError:
+                pass
+    counts, cache = {}, {}
+    for m in re.finditer("(?:" + re.escape(HOME) + "|~)(?:/[A-Za-z0-9._\\-]+)+", blob):
+        p = m.group(0)
+        if p.startswith("~"):
+            p = HOME + p[1:]
+        key = os.path.dirname(p)
+        if key not in cache:
+            cache[key] = repo_root(p)
+        if cache[key]:
+            counts[cache[key]] = counts.get(cache[key], 0) + 1
+    related = [r for r, _ in sorted(counts.items(), key=lambda kv: -kv[1])]
+    own = repo_root(d)
+    return {"root": own or (related[0] if related else d), "related": [short(r) for r in related]}
+
+
+def cmd_repos(globs):
+    found, seen = [], set()
+    for g in globs + ["~/Projects/*", "~/Proyectos/*"]:
+        for p in sorted(glob.glob(os.path.expanduser(g))):
+            if os.path.isdir(os.path.join(p, ".git")) and p not in seen:
+                seen.add(p)
+                found.append(short(p))
+    return found
+
+
+def cmd_checksum(f):
+    f = os.path.expanduser(f)
+    hs = [("SHA-256", hashlib.sha256()), ("SHA-512", hashlib.sha512()),
+          ("SHA-1", hashlib.sha1()), ("MD5", hashlib.md5())]
+    try:
+        with open(f, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                for _, h in hs:
+                    h.update(chunk)
+    except OSError as e:
+        return {"file": f, "error": str(e), "sums": []}
+    return {"file": f, "sums": [{"algo": a, "value": h.hexdigest()} for a, h in hs]}
+
+
+def cmd_paste(d):
+    """Copied image files (text/uri-list) are attached as they are; raw image data is saved
+    as PNG. Plain text on the clipboard wins, so Ctrl+V still pastes text normally."""
+    def wl(args):
+        try:
+            return subprocess.run(["wl-paste"] + args, capture_output=True, timeout=5)
+        except Exception:
+            return None
+    r = wl(["--list-types"])
+    types = r.stdout.decode().split() if r and r.returncode == 0 else []
+    if "text/uri-list" in types:
+        u = wl(["--type", "text/uri-list"])
+        paths = []
+        for line in (u.stdout.decode().splitlines() if u else []):
+            line = line.strip()
+            if line.startswith("file://"):
+                from urllib.parse import unquote
+                p = unquote(line[7:])
+                if os.path.splitext(p)[1].lower() in IMAGE_EXTS and os.path.isfile(p):
+                    paths.append(p)
+        if paths:
+            return paths
+    img = next((t for t in types if t.startswith("image/")), None)
+    if not img or any(t in types for t in ("text/plain", "text/plain;charset=utf-8", "UTF8_STRING")):
+        return []
+    os.makedirs(d, exist_ok=True)
+    data = wl(["--type", "image/png" if "image/png" in types else img])
+    if not data or data.returncode != 0 or not data.stdout:
+        return []
+    ext = ".png" if "image/png" in types else "." + img.split("/")[1].split(";")[0]
+    path = os.path.join(d, f"paste-{int(time.time() * 1000)}{ext}")
+    with open(path, "wb") as fh:
+        fh.write(data.stdout)
+    return [path]
+
+
+def main():
+    a = sys.argv[1:]
+    if not a:
+        print(__doc__.strip())
+        return 1
+    cmd = a[0]
+    if cmd == "git" and len(a) >= 2:
+        out(cmd_git(a[1]))
+    elif cmd == "remotes" and len(a) >= 2:
+        out(cmd_remotes(a[1]))
+    elif cmd == "follow" and len(a) >= 2:
+        ids = [a[i + 1] for i in range(2, len(a) - 1) if a[i] == "--id"]
+        out(cmd_follow(a[1], ids))
+    elif cmd == "repos":
+        out(cmd_repos(a[1:]))
+    elif cmd == "checksum" and len(a) >= 2:
+        out(cmd_checksum(a[1]))
+    elif cmd == "paste":
+        out(cmd_paste(os.path.expanduser(a[1] if len(a) > 1 else os.path.join(STATE, "pastes"))))
+    else:
+        print(__doc__.strip())
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

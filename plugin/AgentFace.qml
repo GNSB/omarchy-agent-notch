@@ -1189,6 +1189,7 @@ Item {
   }
 
   // ------------------------------------------------------------- pointer
+  signal tapped()
   property int pokes: 0
   property int shakes: 0
   property real lastPX: 0
@@ -1230,6 +1231,7 @@ Item {
   TapHandler {
     enabled: face.interactive && face.run
     onTapped: {
+      face.tapped()
       face.pokes++
       pokeReset.restart()
       pokeAnim.restart()

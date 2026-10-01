@@ -27,6 +27,9 @@ fi
 echo "→ backend $BIN"
 mkdir -p "$(dirname "$BIN")"
 install -m 755 bin/myzk-agents "$BIN"
+# usage meters + the client window's git/checksum/paste helpers
+install -m 755 bin/claude-usage "$(dirname "$BIN")/claude-usage"
+install -m 755 bin/agent-notch-tools "$(dirname "$BIN")/agent-notch-tools"
 
 python3 - "$SHELL_JSON" "$CLAUDE_SETTINGS" "$BIN" <<'PY'
 import json, os, shutil, sys

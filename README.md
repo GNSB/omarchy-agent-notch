@@ -16,7 +16,8 @@ There are two front-ends over the same backend:
 |---|---|---|
 | what | Quickshell plugin in `plugin/` | native SwiftUI app in `macos/` |
 | notch | under (or inside) the Omarchy bar | around the MacBook's physical notch (a drawn one on other screens) |
-| extras | `placement`, `screen`, `qs … ipc` | a full **client window**, Git & checksum tools, per-chat models, chat history |
+| extras | `placement`, `screen`, `qs … ipc` | dock icon, ⌘M folds the client into the notch |
+| both | client window, Git inspector, Git & checksum tools, agent/model pickers, chat history, pasted images, usage meters | |
 | needs | Omarchy, `python3` | macOS 13+, Swift (`xcode-select --install`), `python3` |
 
 Run `./setup.sh` and pick **Omarchy** (Linux, Quickshell plugin) or **macOS** (native SwiftUI app in `macos/`).
@@ -24,6 +25,12 @@ It defaults to whatever matches your machine; `./setup.sh omarchy` / `./setup.sh
 Both share the same backend (`bin/myzk-agents`), hooks, `config.json` and `i18n.json`. The macOS app needs
 Swift (`xcode-select --install`) and supports faces, accessories, moods, pointer reactions and the Customize
 panel; Omarchy-only bits are `placement`, `screen` and the `qs ... ipc` commands.
+
+On Omarchy the client is a normal window (`Agent Notch`): open it with the **⤢** button in the expanded notch
+or `ipc call myzk.notch client`. It has the same chat list, transcript, composer (agent / folder / model),
+Git inspector that follows the chat's repo, and the **Git & Checksum** tab. The Git, checksum and clipboard
+work is done by `bin/agent-notch-tools` (Python, uses `git`, `wl-paste` and, for the file picker, `zenity`).
+Ctrl+V in the notch or the client attaches clipboard images; Esc closes the prompt and keeps the draft.
 
 ## Features
 
@@ -156,6 +163,7 @@ Environment overrides: `AGENT_NOTCH_CONFIG` (config path), `AGENT_NOTCH_BACKEND`
 
 ```bash
 qs -p /usr/share/omarchy/shell ipc call myzk.notch toggle   # also: grok, ask, greet, close, last, demo true|false
+qs -p /usr/share/omarchy/shell ipc call myzk.notch client   # client window; also: chat KEY, tools, agents
 ```
 
 ## Backend CLI
