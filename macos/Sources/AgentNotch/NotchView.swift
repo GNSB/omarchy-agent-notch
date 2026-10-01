@@ -370,10 +370,24 @@ private struct AnswerBody: View {
                              style: m.style(a), accessory: m.gear(a)).frame(width: 30, height: 30)
                     Text(a.task).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                     Spacer()
-                    Button(m.tr("answer.terminal")) { m.openTerminal(a) }
-                        .buttonStyle(.plain).foregroundStyle(m.claudeColor).font(.system(size: 11, weight: .medium))
-                    Button { m.answerKey = "" } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain).foregroundStyle(.secondary).help(m.tr("answer.close"))
+                    Button { m.openTerminal(a) } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "terminal").font(.system(size: 12, weight: .semibold))
+                            Text(m.tr("answer.terminal")).font(.system(size: 12, weight: .semibold))
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Capsule().fill(m.claudeColor.opacity(0.24)))
+                        .overlay(Capsule().stroke(m.claudeColor.opacity(0.5), lineWidth: 1))
+                        .foregroundStyle(m.claudeColor)
+                        .contentShape(Capsule())
+                    }.buttonStyle(.plain)
+                    Button { m.answerKey = "" } label: {
+                        Image(systemName: "xmark").font(.system(size: 12, weight: .bold))
+                            .frame(width: 28, height: 28)
+                            .background(Circle().fill(Color.white.opacity(0.14)))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .contentShape(Circle())
+                    }.buttonStyle(.plain).help(m.tr("answer.close"))
                 }
                 ScrollView {
                     Group {
