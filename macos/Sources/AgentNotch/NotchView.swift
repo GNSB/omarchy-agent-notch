@@ -32,6 +32,7 @@ struct NotchRoot: View {
         case .input: return 580
         case .answer: return 600
         case .custom: return 580
+        case .detect: return 580
         }
     }
 
@@ -46,6 +47,10 @@ struct NotchRoot: View {
             case .input: InputBody(m: m).transition(.opacity)
             case .answer: AnswerBody(m: m).transition(.opacity)
             case .custom: CustomBody(m: m).transition(.opacity)
+            case .detect: DetectBody(m: m).transition(.opacity)
+            }
+            if [.alert, .input, .answer].contains(m.mode) {
+                UsageCard(m: m).padding(.horizontal, 22).padding(.bottom, 12)
             }
         }
         .frame(width: width)
@@ -55,6 +60,17 @@ struct NotchRoot: View {
                 .onAppear { m.hitSize = g.size }
                 .onChange(of: g.size) { m.hitSize = $0 }
         })
+        .overlay(alignment: .bottomTrailing) {
+            if m.mode != .collapsed {
+                Button { AppDelegate.shared?.showClient() } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 11, weight: .bold))
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(Color.white.opacity(0.14)))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .contentShape(Circle())
+                }.buttonStyle(.plain).help("Open client").padding(8)
+            }
+        }
         .contentShape(Rectangle())
         .onHover { m.setHover($0) }
         .coordinateSpace(name: "notch")
@@ -80,8 +96,20 @@ struct NotchRoot: View {
             FaceView(mood: main.map { m.mood($0) } ?? "sleep", tint: m.tint(main), size: 22, glowAlways: true,
                      style: m.style(main), accessory: m.gear(main), reaction: m.reaction(main))
                 .frame(width: 26, height: 26)
+                .overlay(alignment: .topTrailing) {
+                    if m.hasDraft && m.mode != .input {
+                        Text(m.attachments.isEmpty ? "•" : "\(m.attachments.count)")
+                            .font(.system(size: 8, weight: .bold)).foregroundStyle(.black)
+                            .frame(minWidth: 12, minHeight: 12).background(Circle().fill(m.claudeColor))
+                            .offset(x: 4, y: -2)
+                    }
+                }
                 .contentShape(Rectangle())
                 .onTapGesture { m.openInput() }
+            Spacer(minLength: 0)
+            Color.clear.frame(width: m.geometry.hasNotch ? m.geometry.notchW : 100)
+                .contentShape(Rectangle())
+                .onTapGesture { AppDelegate.shared?.showClient() }
             Spacer(minLength: 0)
             let cluster = m.cluster
             LazyVGrid(columns: [GridItem(.fixed(12), spacing: 4), GridItem(.fixed(12), spacing: 4)], spacing: 4) {
@@ -121,6 +149,12 @@ private struct ExpandedBody: View {
                         .background(Capsule().fill(m.claudeColor.opacity(0.22)))
                         .foregroundStyle(m.claudeColor)
                 }.buttonStyle(.plain)
+                Button { m.openDetect() } label: {
+                    Text("⌕  " + m.tr("detect.button"))
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(Capsule().fill(Color.white.opacity(0.08)))
+                        .foregroundStyle(.secondary)
+                }.buttonStyle(.plain)
                 Button { m.openCustom() } label: {
                     Text(m.tr("custom.button"))
                         .padding(.horizontal, 14).padding(.vertical, 8)
@@ -128,8 +162,55 @@ private struct ExpandedBody: View {
                         .foregroundStyle(.secondary)
                 }.buttonStyle(.plain)
             }
+            UsageCard(m: m)
         }
         .padding(.horizontal, 14).padding(.bottom, 14).padding(.top, 2)
+    }
+}
+
+/// Quiet footer: context fill of the focused session as a hairline, month total as a whisper.
+/// No card, no colour until it matters (amber from 70%, red from 90%).
+/// The month only gets a bar when `monthlyTokenBudget` is set in config.json.
+private struct UsageCard: View {
+    @ObservedObject var m: NotchModel
+
+    private func fmt(_ n: Int) -> String {
+        n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1e6) : n >= 1000 ? "\(n / 1000)k" : "\(n)"
+    }
+    private func fill(_ pct: Double) -> Color {
+        pct >= 90 ? Color(hex: "#FF6B6B").opacity(0.85) : pct >= 70 ? Color(hex: "#F5B544").opacity(0.8) : Color.white.opacity(0.32)
+    }
+
+    private func line(_ label: String, _ pct: Double?, _ trailing: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label).frame(width: 52, alignment: .leading)
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.06))
+                if let pct {
+                    GeometryReader { g in
+                        Capsule().fill(fill(pct)).frame(width: max(3, g.size.width * min(max(pct / 100, 0), 1)))
+                    }
+                }
+            }
+            .frame(height: 2)
+            .animation(.smooth(duration: 0.9), value: pct)
+            Text(trailing).monospacedDigit().frame(width: 74, alignment: .trailing)
+        }
+        .font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.55))
+    }
+
+    var body: some View {
+        if let u = m.usage, u.sessionPct != nil || u.monthTokens > 0 {
+            VStack(spacing: 5) {
+                if let p = u.sessionPct { line(m.tr("usage.session"), p, "\(fmt(u.sessionTokens)) · \(Int(p))%") }
+                if u.monthTokens > 0 {
+                    line(m.tr("usage.month"), u.monthBudget > 0 ? u.monthPct : nil,
+                         u.monthBudget > 0 && u.monthPct != nil ? "\(fmt(u.monthTokens)) · \(Int(u.monthPct!))%" : fmt(u.monthTokens))
+                }
+            }
+            .padding(.horizontal, 6).padding(.top, 2)
+            .transition(.opacity)
+        }
     }
 }
 
@@ -145,13 +226,14 @@ private struct FocusCard: View {
                      style: m.style(a), accessory: m.gear(a), reaction: m.reaction(a))
                 .frame(width: 52, height: 52)
                 .contentShape(Rectangle())
-                .onTapGesture { m.poke(a.key) }
+                .onTapGesture { m.tapPet(a) }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(m.displayName(a)).fontWeight(.semibold).lineLimit(1)
                     Text(m.tr("state." + mood)).font(.system(size: 11, weight: .medium))
                         .padding(.horizontal, 7).padding(.vertical, 2)
                         .background(Capsule().fill(tone.opacity(0.2))).foregroundStyle(tone)
+                    ModelBadge(a: a)
                     Spacer()
                     Text(m.ago(a.since)).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
@@ -167,9 +249,17 @@ private struct FocusCard: View {
                         .id(a.detail).transition(.opacity)
                 }
                 if a.source == "notch" && !a.answer.isEmpty {
-                    Button(m.tr("ask.viewAnswer")) { m.answerKey = a.key; AppDelegate.shared?.makeKey() }
-                        .buttonStyle(.plain).foregroundStyle(m.claudeColor).font(.system(size: 12, weight: .medium))
-                        .padding(.top, 2)
+                    Button { m.answerKey = a.key; AppDelegate.shared?.makeKey() } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "text.bubble").font(.system(size: 12, weight: .semibold))
+                            Text(m.tr("ask.viewAnswer")).font(.system(size: 12, weight: .semibold))
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Capsule().fill(m.claudeColor.opacity(0.24)))
+                        .overlay(Capsule().stroke(m.claudeColor.opacity(0.5), lineWidth: 1))
+                        .foregroundStyle(m.claudeColor)
+                        .contentShape(Capsule())
+                    }.buttonStyle(.plain).padding(.top, 4)
                 }
             }
         }
@@ -191,10 +281,18 @@ private struct Chip: View {
             FaceView(mood: mood, tint: m.miniTint(a), size: 16, mini: true, style: m.style(a)).frame(width: 18, height: 18)
             VStack(alignment: .leading, spacing: 0) {
                 Text(m.displayName(a)).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                Text(m.tr("state." + mood)).font(.system(size: 10))
+                Text(m.tr("state." + mood) + (a.model.isEmpty ? "" : " · " + a.model)).font(.system(size: 10))
                     .foregroundStyle(NotchModel.stateColor[mood] ?? .gray)
             }
             Spacer(minLength: 0)
+            if a.source == "notch" {   // a chat you opened here: close it with one click
+                Button { m.forget(a) } label: {
+                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                        .frame(width: 18, height: 18)
+                        .background(Circle().fill(Color.white.opacity(0.1)))
+                        .foregroundStyle(.secondary).contentShape(Circle())
+                }.buttonStyle(.plain).help("Close chat")
+            }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 12).fill(m.cardColor))
@@ -239,10 +337,42 @@ private struct AlertBody: View {
 
 // MARK: - ask input
 
+/// Pasted images as thumbnails; paste (⌘V) again to add more, × removes one.
+struct AttachmentStrip: View {
+    @ObservedObject var m: NotchModel
+    var size: CGFloat = 46
+    var body: some View {
+        if !m.attachments.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(m.attachments, id: \.self) { p in
+                        ZStack(alignment: .topTrailing) {
+                            Group {
+                                if let img = NSImage(contentsOfFile: p) { Image(nsImage: img).resizable().scaledToFill() }
+                                else { Image(systemName: "photo").foregroundStyle(.secondary) }
+                            }
+                            .frame(width: size, height: size)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.white.opacity(0.15), lineWidth: 1))
+                            .help((p as NSString).lastPathComponent)
+                            Button { withAnimation(.smooth(duration: 0.2)) { m.attachments.removeAll { $0 == p } } } label: {
+                                Image(systemName: "xmark").font(.system(size: 7, weight: .black))
+                                    .frame(width: 16, height: 16).background(Circle().fill(Color.black.opacity(0.8)))
+                                    .foregroundStyle(.white)
+                            }.buttonStyle(.plain).offset(x: 5, y: -5)
+                        }
+                    }
+                    Text("\(m.attachments.count) · ⌘V to add").font(.system(size: 10)).foregroundStyle(.secondary)
+                }.padding(.top, 6).padding(.trailing, 6)
+            }
+        }
+    }
+}
+
 private struct InputBody: View {
     @ObservedObject var m: NotchModel
-    @State private var text = ""
     @FocusState private var focused: Bool
+    private var text: String { m.draft }
 
     var body: some View {
         VStack(spacing: 10) {
@@ -250,10 +380,26 @@ private struct InputBody: View {
                 FaceView(mood: text.isEmpty ? "idle" : "thinking", tint: m.tint(m.mainClaude), size: 34, glowAlways: true,
                          style: m.style(m.mainClaude), accessory: m.gear(m.mainClaude))
                     .frame(width: 40, height: 40)
-                TextField(m.tr("ask.placeholder", ["name": m.assistantName]), text: $text, axis: .vertical)
+                TextField(m.tr("ask.placeholder", ["name": m.chatAgents.first { $0.id == m.askAgent }?.name ?? m.assistantName]), text: $m.draft, axis: .vertical)
                     .textFieldStyle(.plain).lineLimit(1...5).focused($focused)
-                    .onSubmit { m.send(text); text = "" }
+                    .onSubmit { m.send(text); m.draft = "" }
                     .padding(.top, 10)
+            }
+            AttachmentStrip(m: m)
+            if m.chatAgents.count > 1 {
+                HStack(spacing: 6) {
+                    ForEach(m.chatAgents, id: \.id) { a in
+                        let on = m.askAgent == a.id
+                        Text(a.name).font(.system(size: 11, weight: .semibold))
+                            .padding(.horizontal, 12).padding(.vertical, 5)
+                            .background(Capsule().fill(on ? m.claudeColor.opacity(0.28) : Color.white.opacity(0.07)))
+                            .overlay(Capsule().stroke(on ? m.claudeColor.opacity(0.6) : .clear, lineWidth: 1))
+                            .foregroundStyle(on ? m.claudeColor : Color.secondary)
+                            .contentShape(Capsule())
+                            .onTapGesture { withAnimation(.smooth(duration: 0.2)) { m.askAgent = a.id } }
+                    }
+                    Spacer(minLength: 0)
+                }
             }
             HStack {
                 Button { m.cycleDir() } label: {
@@ -261,9 +407,10 @@ private struct InputBody: View {
                         .padding(.horizontal, 9).padding(.vertical, 4)
                         .background(Capsule().fill(Color.white.opacity(0.08)))
                 }.buttonStyle(.plain)
+                ModelPicker(m: m, agent: m.askAgent)
                 Spacer()
                 Text(m.tr("ask.hint")).font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.7))
-                Button { m.send(text); text = "" } label: {
+                Button { m.send(text); m.draft = "" } label: {
                     Image(systemName: "arrow.up").font(.system(size: 12, weight: .bold))
                         .frame(width: 26, height: 26)
                         .background(Circle().fill(text.trimmingCharacters(in: .whitespaces).isEmpty
@@ -275,7 +422,7 @@ private struct InputBody: View {
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 18).fill(m.cardColor))
         .padding(.horizontal, 14).padding(.bottom, 14).padding(.top, 2)
-        .onExitCommand { text = ""; m.closeInput() }
+        .onExitCommand { m.discardDraft() }
         .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { focused = true } }
     }
 }
@@ -296,11 +443,26 @@ private struct AnswerBody: View {
                     FaceView(mood: mood, tint: m.tint(a), size: 26, glowAlways: true,
                              style: m.style(a), accessory: m.gear(a)).frame(width: 30, height: 30)
                     Text(a.task).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                    ModelBadge(a: a)
                     Spacer()
-                    Button(m.tr("answer.terminal")) { m.openTerminal(a) }
-                        .buttonStyle(.plain).foregroundStyle(m.claudeColor).font(.system(size: 11, weight: .medium))
-                    Button { m.answerKey = "" } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain).foregroundStyle(.secondary).help(m.tr("answer.close"))
+                    Button { m.openTerminal(a) } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "terminal").font(.system(size: 12, weight: .semibold))
+                            Text(m.tr("answer.terminal")).font(.system(size: 12, weight: .semibold))
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Capsule().fill(m.claudeColor.opacity(0.24)))
+                        .overlay(Capsule().stroke(m.claudeColor.opacity(0.5), lineWidth: 1))
+                        .foregroundStyle(m.claudeColor)
+                        .contentShape(Capsule())
+                    }.buttonStyle(.plain)
+                    Button { m.answerKey = "" } label: {
+                        Image(systemName: "xmark").font(.system(size: 12, weight: .bold))
+                            .frame(width: 28, height: 28)
+                            .background(Circle().fill(Color.white.opacity(0.14)))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .contentShape(Circle())
+                    }.buttonStyle(.plain).help(m.tr("answer.close"))
                 }
                 ScrollView {
                     Group {
@@ -313,6 +475,8 @@ private struct AnswerBody: View {
                     .font(.system(size: 13)).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 240)
+                AttachmentStrip(m: m)
+                ModelPicker(m: m, agent: a.agent, chat: a.key)
                 HStack {
                     TextField(m.tr("answer.reply", ["name": m.assistantName]), text: $reply)
                         .textFieldStyle(.plain).focused($focused)
@@ -351,76 +515,283 @@ private struct CustomBody: View {
     private var tint: Color {
         isClaude ? mix(Color(hex: "#EEF2F7"), m.claudeColor, 0.28) : mix(Color(hex: "#EEF2F7"), Color(hex: m.palette[0]), 0.16)
     }
+    private var moodTone: Color { NotchModel.stateColor[m.customMood] ?? .gray }
 
-    private func pill(_ title: String, _ on: Bool, _ action: @escaping () -> Void) -> some View {
+    // MARK: building blocks
+
+    /// Segmented control: one capsule that slides under the selected option.
+    private func segmented(_ items: [(id: String, title: String)], selected: String, _ pick: @escaping (String) -> Void) -> some View {
+        HStack(spacing: 2) {
+            ForEach(items, id: \.id) { it in
+                Text(it.title).font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 11).padding(.vertical, 5)
+                    .foregroundStyle(selected == it.id ? Color.white : Color.secondary)
+                    .background { if selected == it.id { Capsule().fill(m.claudeColor.opacity(0.85)) } }
+                    .contentShape(Capsule())
+                    .onTapGesture { withAnimation(.smooth(duration: 0.25)) { pick(it.id) } }
+            }
+        }
+        .padding(2).background(Capsule().fill(Color.white.opacity(0.07)))
+    }
+
+    private func section<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title).font(.system(size: 10, weight: .semibold)).tracking(0.6).textCase(.uppercase)
+                .foregroundStyle(.secondary.opacity(0.7))
+            content()
+        }
+    }
+
+    private func chip(_ title: String, _ on: Bool, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(.system(size: 11, weight: .medium))
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(Capsule().fill(on ? m.claudeColor.opacity(0.3) : Color.white.opacity(0.08)))
-                .foregroundStyle(on ? m.claudeColor : Color.secondary)
+            HStack(spacing: 4) {
+                if on { Image(systemName: "checkmark").font(.system(size: 8, weight: .bold)) }
+                Text(title.capitalized).font(.system(size: 11, weight: .medium)).lineLimit(1).fixedSize()
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Capsule().fill(on ? m.claudeColor.opacity(0.26) : Color.white.opacity(0.07)))
+            .foregroundStyle(on ? m.claudeColor : Color.secondary)
+            .animation(.smooth(duration: 0.2), value: on)
         }.buttonStyle(.plain)
     }
 
+    private func styleTile(_ st: String) -> some View {
+        let on = style == st
+        return VStack(spacing: 5) {
+            FaceView(mood: "idle", tint: tint, size: 30, style: st, accessory: [])
+                .frame(width: 38, height: 38)
+            Text(m.tr("custom.style." + st)).font(.system(size: 10, weight: .medium))
+                .foregroundStyle(on ? m.claudeColor : .secondary)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 12).fill(on ? m.claudeColor.opacity(0.14) : Color.white.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(on ? m.claudeColor.opacity(0.7) : .clear, lineWidth: 1.2))
+        .contentShape(Rectangle())
+        .onTapGesture { withAnimation(.smooth(duration: 0.2)) { m.setStyle(st) } }
+    }
+
+    private func stepButton(_ icon: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: 9, weight: .bold))
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(Color.white.opacity(0.08)))
+                .foregroundStyle(.secondary).contentShape(Circle())
+        }.buttonStyle(.plain)
+    }
+
+    private func stepMood(_ d: Int) {
+        let i = moods.firstIndex(of: m.customMood) ?? 0
+        m.customMood = moods[(i + d + moods.count) % moods.count]
+    }
+
+    // MARK: body
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(m.tr("custom.title")).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 14) {
+            // header
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(m.tr("custom.title").capitalized).font(.system(size: 15, weight: .semibold))
+                    Text(m.tr("custom.hint")).font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.7))
+                }
                 Spacer()
-                pill(m.assistantName, isClaude) { m.customTarget = "claude" }
-                pill("Bots", !isClaude) { m.customTarget = "grok" }
-                pill(m.tr("custom.done"), false) { m.closeCustom(); m.pinned = false }
+                segmented([("claude", m.assistantName), ("grok", "Bots")], selected: m.customTarget) { m.customTarget = $0 }
+                Button { m.closeCustom(); m.pinned = false } label: {
+                    Text(m.tr("custom.done")).font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 16).padding(.vertical, 6)
+                        .background(Capsule().fill(m.claudeColor))
+                        .foregroundStyle(.white).contentShape(Capsule())
+                }.buttonStyle(.plain)
             }
-            HStack(alignment: .top, spacing: 16) {
-                VStack(spacing: 6) {
-                    FaceView(mood: m.customMood, tint: tint, size: 70, glowAlways: true, style: style, accessory: gear,
+
+            HStack(alignment: .top, spacing: 14) {
+                // live preview
+                VStack(spacing: 10) {
+                    FaceView(mood: m.customMood, tint: tint, size: 74, glowAlways: true, style: style, accessory: gear,
                              reaction: m.reactions["preview"] ?? "")
-                        .frame(width: 84, height: 84)
+                        .frame(width: 92, height: 92)
                         .contentShape(Rectangle())
                         .onTapGesture { m.poke("preview") }
-                    HStack(spacing: 6) {
-                        pill(m.tr("custom.annoy"), false) { m.react("preview", "annoyed", 1.6) }
-                        pill(m.tr("custom.dizzy"), false) { m.react("preview", "dizzy", 2.4) }
+                    HStack(spacing: 5) {
+                        stepButton("chevron.left") { stepMood(-1) }
+                        HStack(spacing: 5) {
+                            Circle().fill(moodTone).frame(width: 6, height: 6)
+                            Text(m.tr("state." + m.customMood)).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                                .id(m.customMood).transition(.opacity)
+                        }
+                        .frame(maxWidth: .infinity).padding(.vertical, 6)
+                        .background(Capsule().fill(Color.white.opacity(0.08)))
+                        .animation(.smooth(duration: 0.2), value: m.customMood)
+                        stepButton("chevron.right") { stepMood(1) }
+                    }.padding(.horizontal, 10)
+                    HStack(spacing: 5) {
+                        chip(m.tr("custom.annoy"), false) { m.react("preview", "annoyed", 1.6) }
+                        chip(m.tr("custom.dizzy"), false) { m.react("preview", "dizzy", 2.4) }
                     }
                 }
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 6) {
-                        Text(m.tr("custom.style")).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
-                        ForEach(faceStyles, id: \.self) { st in pill(m.tr("custom.style." + st), style == st) { m.setStyle(st) } }
-                    }
-                    HStack(alignment: .top, spacing: 6) {
-                        Text(m.tr("custom.gear")).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 74), spacing: 5)], alignment: .leading, spacing: 5) {
-                            pill(m.tr("custom.none"), gear.isEmpty) { m.clearGear() }
-                            ForEach(faceAccessories, id: \.self) { a in pill(a, gear.contains(a)) { m.toggleGear(a) } }
+                .padding(.vertical, 14).frame(width: 156)
+                .background(RoundedRectangle(cornerRadius: 18).fill(mix(m.cardColor, moodTone, 0.07)))
+                .animation(.smooth(duration: 0.4), value: m.customMood)
+
+                // options
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        section(m.tr("custom.style")) {
+                            HStack(spacing: 6) { ForEach(faceStyles, id: \.self) { styleTile($0) } }
                         }
-                    }
-                    if isClaude {
-                        HStack(spacing: 6) {
-                            Text(m.tr("custom.color")).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
-                            ForEach(swatches, id: \.self) { hex in
-                                Circle().fill(Color(hex: hex)).frame(width: 18, height: 18)
-                                    .overlay(Circle().stroke(.white.opacity(m.cfg.str("claudeColor", "#E0784F").lowercased() == hex.lowercased() ? 0.9 : 0), lineWidth: 1.5))
-                                    .onTapGesture { m.setColor(hex) }
+                        section(m.tr("custom.gear")) {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 5)], alignment: .leading, spacing: 5) {
+                                chip(m.tr("custom.none"), gear.isEmpty) { m.clearGear() }
+                                ForEach(faceAccessories, id: \.self) { a in chip(a, gear.contains(a)) { m.toggleGear(a) } }
                             }
                         }
+                        if isClaude {
+                            section(m.tr("custom.color")) {
+                                HStack(spacing: 8) {
+                                    ForEach(swatches, id: \.self) { hex in
+                                        let on = m.cfg.str("claudeColor", "#E0784F").lowercased() == hex.lowercased()
+                                        Circle().fill(Color(hex: hex)).frame(width: 22, height: 22)
+                                            .overlay(Circle().stroke(.white.opacity(on ? 0.95 : 0), lineWidth: 2).padding(-3))
+                                            .scaleEffect(on ? 1.08 : 1)
+                                            .animation(.smooth(duration: 0.2), value: on)
+                                            .onTapGesture { m.setColor(hex) }
+                                    }
+                                }.padding(.leading, 3)
+                            }
+                        }
+                        section(m.tr("custom.tap")) {
+                            segmented(["chat", "terminal", "play"].map { ($0, m.tr("custom.tap." + $0)) }, selected: m.petTap) { m.setPetTap($0) }
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(height: 262)
             }
-            HStack(spacing: 5) {
-                ForEach(moods, id: \.self) { mo in
-                    Button { m.customMood = mo } label: {
-                        Text(m.tr("state." + mo)).font(.system(size: 10))
-                            .padding(.horizontal, 7).padding(.vertical, 3)
-                            .background(Capsule().fill(m.customMood == mo ? (NotchModel.stateColor[mo] ?? .gray).opacity(0.3) : Color.white.opacity(0.06)))
-                            .foregroundStyle(m.customMood == mo ? (NotchModel.stateColor[mo] ?? .gray) : Color.secondary)
-                    }.buttonStyle(.plain)
-                }
-            }
-            Text(m.tr("custom.hint")).font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.6))
         }
-        .padding(14)
+        .padding(16)
         .background(RoundedRectangle(cornerRadius: 18).fill(m.cardColor))
         .padding(.horizontal, 14).padding(.bottom, 14).padding(.top, 2)
         .onExitCommand { m.closeCustom() }
+    }
+}
+
+// MARK: - detect agents
+
+private struct DetectBody: View {
+    @ObservedObject var m: NotchModel
+
+    private var installed: [DetectedAgent] { m.detected.filter(\.installed) }
+    private var missing: [DetectedAgent] { m.detected.filter { !$0.installed } }
+
+    private func row(_ a: DetectedAgent) -> some View {
+        let tone = a.connected ? Color(hex: "#3DD68C") : Color(hex: "#F5B544")
+        return HStack(spacing: 10) {
+            Circle().fill(tone).frame(width: 8, height: 8).shadow(color: tone.opacity(0.6), radius: 4)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(a.name).font(.system(size: 13, weight: .semibold))
+                    if !a.version.isEmpty { Text("v" + a.version).font(.system(size: 10)).foregroundStyle(.secondary) }
+                }
+                Text(a.connected ? shortPath(a.path) : m.tr("detect.hint"))
+                    .font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.75)).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            Text(m.tr(a.connected ? "detect.connected" : "detect.found")).font(.system(size: 10, weight: .semibold))
+                .padding(.horizontal, 9).padding(.vertical, 3)
+                .background(Capsule().fill(tone.opacity(0.2))).foregroundStyle(tone)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.05)))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(m.tr("detect.title")).font(.system(size: 15, weight: .semibold))
+                    Text(m.detecting ? m.tr("detect.scanning") : "\(installed.count) / \(m.detected.count)")
+                        .font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.7))
+                }
+                Spacer()
+                Button { m.rescan() } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.clockwise").font(.system(size: 10, weight: .bold))
+                            .rotationEffect(.degrees(m.detecting ? 360 : 0))
+                            .animation(m.detecting ? .linear(duration: 0.9).repeatForever(autoreverses: false) : .default, value: m.detecting)
+                        Text(m.tr("detect.rescan")).font(.system(size: 11, weight: .medium))
+                    }
+                    .padding(.horizontal, 11).padding(.vertical, 6)
+                    .background(Capsule().fill(Color.white.opacity(0.09))).foregroundStyle(.primary).contentShape(Capsule())
+                }.buttonStyle(.plain)
+                Button { m.closeDetect() } label: {
+                    Text(m.tr("custom.done")).font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 16).padding(.vertical, 6)
+                        .background(Capsule().fill(m.claudeColor)).foregroundStyle(.white).contentShape(Capsule())
+                }.buttonStyle(.plain)
+            }
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 6) {
+                    ForEach(installed) { row($0) }
+                    if !missing.isEmpty {
+                        Text(m.tr("detect.notfound") + ":  " + missing.map(\.name).joined(separator: " · "))
+                            .font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.55))
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6).padding(.horizontal, 4)
+                    }
+                }
+            }
+            .frame(maxHeight: 250)
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 18).fill(m.cardColor))
+        .padding(.horizontal, 14).padding(.bottom, 14).padding(.top, 2)
+        .onExitCommand { m.closeDetect() }
+    }
+}
+
+
+/// Which model the router picked, and how: "Haiku · auto" (classified), "· short" (skipped the
+/// classifier), orange "· fallback" when the router failed and the default tier was used.
+struct ModelBadge: View {
+    let a: Agent
+    var body: some View {
+        if !a.model.isEmpty {
+            let bad = a.route == "fallback"
+            let tone = bad ? Color(hex: "#F5A524") : Color.secondary
+            HStack(spacing: 4) {
+                Image(systemName: bad ? "exclamationmark.triangle.fill" : "arrow.triangle.branch")
+                    .font(.system(size: 9, weight: .bold))
+                Text(a.model.capitalized + (a.route.isEmpty ? "" : " · " + a.route))
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(Capsule().fill(bad ? tone.opacity(0.2) : Color.white.opacity(0.1)))
+            .foregroundStyle(tone)
+        }
+    }
+}
+
+struct ModelPicker: View {
+    @ObservedObject var m: NotchModel
+    let agent: String
+    /// Set for an existing chat: the pick is remembered for that chat. nil = the next new chat.
+    var chat: String? = nil
+    var body: some View {
+        let choices = m.modelChoices(agent)
+        if !choices.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 5) {
+                    ForEach(choices, id: \.self) { c in
+                        let on = (chat.map { m.chatModel($0) } ?? m.askModel) == c
+                        Text(c == "auto" ? "Auto" : c.capitalized).font(.system(size: 10, weight: .semibold))
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(Capsule().fill(on ? m.claudeColor.opacity(0.28) : Color.white.opacity(0.07)))
+                            .overlay(Capsule().stroke(on ? m.claudeColor.opacity(0.6) : .clear, lineWidth: 1))
+                            .foregroundStyle(on ? m.claudeColor : Color.secondary)
+                            .contentShape(Capsule())
+                            .onTapGesture { withAnimation(.smooth(duration: 0.2)) { if let chat { m.setChatModel(chat, c) } else { m.askModel = c } } }
+                    }
+                }
+            }
+        }
     }
 }

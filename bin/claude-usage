@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""claude-usage — context fill of a session + token totals for the month.
+
+  claude-usage [TRANSCRIPT.jsonl | --session SID]   JSON on stdout
+
+Context = last assistant turn's input + cache read + cache creation tokens,
+read from the transcript Claude Code already writes. Month total = input+output+cache writes (cache reads reported apart). Month = every assistant
+message in ~/.claude/projects/**/*.jsonl stamped with the current month
+(deduped by message id). Limits are NOT known to the CLI, so they come from
+~/.config/agent-notch/config.json: contextWindow (default 200000, 1M for
+"[1m]" models) and monthlyTokenBudget (default 0 = no bar, totals only).
+"""
+import glob, json, os, sys, time
+
+CFG = os.path.expanduser("~/.config/agent-notch/config.json")
+cfg = {}
+try: cfg = json.load(open(CFG))
+except Exception: pass
+
+def used(u):
+    return (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
+            + u.get("cache_creation_input_tokens", 0))
+
+def window(model):
+    if cfg.get("contextWindow"): return int(cfg["contextWindow"])
+    return 1_000_000 if "[1m]" in (model or "") else 200_000
+
+def session(path):
+    last = None
+    try:
+        for line in open(path, errors="ignore"):
+            if '"usage"' not in line: continue
+            try: d = json.loads(line)
+            except Exception: continue
+            m = d.get("message") or {}
+            if isinstance(m, dict) and m.get("usage") and not d.get("isSidechain"):
+                last = m
+    except OSError:
+        return None
+    if not last: return None
+    n = used(last["usage"])
+    w = window(last.get("model"))
+    return {"tokens": n, "window": w, "pct": round(100 * n / w, 1), "model": last.get("model")}
+
+def month():
+    ym = time.strftime("%Y-%m")
+    seen, tot = set(), {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    for p in glob.glob(os.path.expanduser("~/.claude/projects/**/*.jsonl"), recursive=True):
+        try:
+            if time.strftime("%Y-%m", time.localtime(os.path.getmtime(p))) < ym: continue
+            for line in open(p, errors="ignore"):
+                if '"usage"' not in line or ym not in line: continue
+                try: d = json.loads(line)
+                except Exception: continue
+                m = d.get("message") or {}
+                u = m.get("usage") if isinstance(m, dict) else None
+                if not u or not str(d.get("timestamp", "")).startswith(ym): continue
+                key = m.get("id") or d.get("uuid")
+                if key in seen: continue
+                seen.add(key)
+                tot["input"] += u.get("input_tokens", 0)
+                tot["output"] += u.get("output_tokens", 0)
+                tot["cache_read"] += u.get("cache_read_input_tokens", 0)
+                tot["cache_write"] += u.get("cache_creation_input_tokens", 0)
+        except OSError:
+            pass
+    tot["total"] = tot["input"] + tot["output"] + tot["cache_write"]   # cache reads excluded: they dwarf everything and are ~free
+    budget = int(cfg.get("monthlyTokenBudget", 0) or 0)
+    tot["budget"] = budget
+    tot["pct"] = round(100 * tot["total"] / budget, 1) if budget else None
+    tot["month"] = ym
+    return tot
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    path = None
+    if args[:1] == ["--session"] and len(args) > 1:
+        hit = glob.glob(os.path.expanduser("~/.claude/projects/*/%s.jsonl" % os.path.basename(args[1])))
+        path = hit[0] if hit else None
+    elif args:
+        path = args[0]
+    if not path and not args:
+        fs = glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl"))
+        path = max(fs, key=os.path.getmtime) if fs else None
+    print(json.dumps({"session": session(path) if path else None, "month": month()}, indent=1))

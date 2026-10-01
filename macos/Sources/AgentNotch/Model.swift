@@ -44,12 +44,25 @@ func shortPath(_ p: String) -> String { p.hasPrefix(home) ? "~" + p.dropFirst(ho
 struct Agent: Identifiable, Equatable {
     var key: String, agent: String, ident: String, name: String
     var state: String, task: String, detail: String, cwd: String
-    var answer: String, source: String
+    var answer: String, source: String, model: String = "", route: String = "", session: String = ""
     var since: Double, updated: Double
     var id: String { key }
 }
 
-enum Mode { case collapsed, expanded, alert, input, answer, custom }
+struct DetectedAgent: Identifiable, Equatable {
+    var id: String, name: String, path: String, version: String
+    var installed: Bool, connected: Bool, chat: Bool
+    var models: [String] = []
+}
+
+struct UsageInfo: Equatable {
+    var sessionTokens = 0, sessionWindow = 0
+    var sessionPct: Double?
+    var monthTokens = 0, monthBudget = 0
+    var monthPct: Double?
+}
+
+enum Mode { case collapsed, expanded, alert, input, answer, custom, detect }
 
 struct NotchGeometry {
     var notchW: CGFloat = 0
@@ -144,6 +157,15 @@ final class NotchModel: ObservableObject {
     @Published var customTarget = "claude"      // "claude" | "grok"
     @Published var customMood = "idle"
     @Published var reactions: [String: String] = [:]
+    @Published var attachments: [String] = []
+    @Published var askAgent = "claude" { didSet { askModel = "auto" } }
+    @Published var detectOpen = false
+    @Published var detecting = false
+    @Published var detected: [DetectedAgent] = []
+    @Published var usage: UsageInfo?
+    private var usageStamp = 0.0
+    private var usageKey = "-"
+    private let usageTool = home + "/.local/bin/claude-usage"
     private var pokes: [String: (count: Int, last: Date)] = [:]
     private var reactionTasks: [String: Task<Void, Never>] = [:]
     /// Size of the drawn notch, used by the window to decide which clicks fall through.
@@ -208,6 +230,8 @@ final class NotchModel: ObservableObject {
 
     func start() {
         cfg.reloadIfNeeded()
+        loadChatModels()
+        rescan()
         pollState(force: true)
         Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -219,6 +243,49 @@ final class NotchModel: ObservableObject {
         pollState(force: false)
         let t = Date().timeIntervalSince1970
         if Int(t) != Int(now) { now = t }
+        if mode != .collapsed && mode != .custom { refreshUsageIfStale(t) }
+    }
+
+    // MARK: usage (context of the focused session + tokens this month)
+
+    private func refreshUsageIfStale(_ t: Double) {
+        let sid = ((alertAgent ?? answerAgent ?? focus).flatMap { $0.agent == "claude" ? $0.ident : nil }) ?? ""
+        guard sid != usageKey || t - usageStamp > 20 else { return }
+        usageKey = sid
+        usageStamp = t
+        let tool = usageTool
+        Task.detached { [weak self] in
+            let info = Self.runUsage(tool, sid)
+            await self?.setUsage(info)
+        }
+    }
+
+    private func setUsage(_ info: UsageInfo?) { if let info { usage = info } }
+
+    nonisolated private static func runUsage(_ tool: String, _ sid: String) -> UsageInfo? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: tool)
+        p.arguments = sid.isEmpty ? [] : ["--session", sid]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        func n(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
+        var u = UsageInfo()
+        if let s = j["session"] as? [String: Any] {
+            u.sessionTokens = Int(n(s["tokens"]) ?? 0)
+            u.sessionWindow = Int(n(s["window"]) ?? 0)
+            u.sessionPct = n(s["pct"])
+        }
+        if let m = j["month"] as? [String: Any] {
+            u.monthTokens = Int(n(m["total"]) ?? 0)
+            u.monthBudget = Int(n(m["budget"]) ?? 0)
+            u.monthPct = n(m["pct"])
+        }
+        return u
     }
 
     private func pollState(force: Bool) {
@@ -242,7 +309,7 @@ final class NotchModel: ObservableObject {
             let row = Agent(key: key, agent: s(a["agent"]), ident: s(a["id"]),
                             name: s(a["name"] ?? a["id"]), state: a["state"] == nil ? "idle" : s(a["state"]),
                             task: s(a["task"]), detail: s(a["detail"]), cwd: s(a["cwd"]),
-                            answer: s(a["answer"]), source: s(a["source"]),
+                            answer: s(a["answer"]), source: s(a["source"]), model: s(a["model"]), route: s(a["route"]), session: s(a["session"]),
                             since: d(a["since"]), updated: d(a["updated"]))
             if let prev = old[key] {
                 if prev.detail != row.detail && !prev.detail.isEmpty { hist[key] = prev.detail }
@@ -302,6 +369,7 @@ final class NotchModel: ObservableObject {
 
     var mode: Mode {
         if customOpen { return .custom }
+        if detectOpen { return .detect }
         if inputOpen { return .input }
         if answerAgent != nil { return .answer }
         if hovered || pinned { return .expanded }
@@ -334,7 +402,21 @@ final class NotchModel: ObservableObject {
 
     // MARK: interaction
 
+    private var pointerInside = false
+
+    /// Opens the notch for a moment (e.g. after the client folds into it) without pinning it:
+    /// it closes on its own unless the pointer is on it.
+    func peek(_ secs: Double = 4) {
+        hoverTask?.cancel()
+        hovered = true
+        hoverTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(secs * 1e9))
+            if !Task.isCancelled, self?.pointerInside == false { self?.hovered = false; self?.pickedKey = "" }
+        }
+    }
+
     func setHover(_ on: Bool) {
+        pointerInside = on
         hoverTask?.cancel()
         if on {
             hovered = true
@@ -348,18 +430,64 @@ final class NotchModel: ObservableObject {
 
     func openInput() {
         customOpen = false
+        let resuming = hasDraft          // coming back to a draft: keep its model and folder
+        if !inputOpen && !resuming { newChat() }
+        rescan()
         alertKey = ""
         answerKey = ""
         inputOpen = true
+        let keep = askDir
         var dirs = ["~"]
-        for g in cfg.list("projectDirs", ["~/Projects/*"]) { dirs += expandGlob(g).map(shortPath) }
+        for g in cfg.list("projectDirs", ["~/Projects/*"]) {
+            for d in expandGlob(g).map(shortPath) where !dirs.contains(d) { dirs.append(d) }
+        }
         askDirs = dirs
-        askDirIndex = 0
+        askDirIndex = resuming ? (dirs.firstIndex(of: keep) ?? 0) : 0
         AppDelegate.shared?.makeKey()
     }
 
+    /// What tapping the pet in the agents view does: "chat" | "terminal" | "play".
+    var petTap: String { cfg.str("petTap", "chat") }
+    func setPetTap(_ v: String) { cfg.save("petTap", v); cfgVersion += 1 }
+    func tapPet(_ a: Agent) {
+        switch petTap {
+        case "terminal": openTerminal(a)
+        case "play": poke(a.key)
+        default: openChat(a)
+        }
+    }
+
+    /// Opens an agent's conversation: its conversation if it was started from the notch, else a fresh question.
+    func openChat(_ a: Agent) {
+        if a.source == "notch" { alertKey = ""; answerKey = a.key; AppDelegate.shared?.makeKey() }
+        else { openInput() }
+    }
+
+    /// Closing the input (e.g. clicking elsewhere to grab another screenshot) keeps the draft:
+    /// text and pasted images are still there when it opens again. Esc discards them.
     func closeInput() { inputOpen = false }
+    func discardDraft() { draft = ""; attachments = []; inputOpen = false }
+    @Published var draft = ""
+    var hasDraft: Bool { !attachments.isEmpty || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    // MARK: chat transcripts (written by the backend, one file per chat)
+
+    struct Turn: Identifiable { let id: Int; let q: String; let a: String; let error: Bool }
+    private var turnCache: [String: (stamp: Date?, turns: [Turn])] = [:]
+    func turns(_ a: Agent) -> [Turn] {
+        let path = home + "/.local/state/myzk-agents/chats/" + a.key.replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: "/", with: "_") + ".json"
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+        if let c = turnCache[a.key], c.stamp == stamp { return c.turns }
+        let raw = (FileManager.default.contents(atPath: path).flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [[String: Any]] ?? []
+        let t = raw.enumerated().map { i, d in
+            Turn(id: i, q: d["q"] as? String ?? "", a: d["a"] as? String ?? "", error: d["error"] as? Bool ?? false)
+        }
+        turnCache[a.key] = (stamp, t)
+        return t
+    }
     func openCustom() {
+        detectOpen = false
         alertKey = ""; answerKey = ""; inputOpen = false
         customOpen = true; pinned = true
     }
@@ -401,7 +529,55 @@ final class NotchModel: ObservableObject {
         cfg.save("claudeColor", hex); cfgVersion += 1
     }
 
-    func closeAll() { customOpen = false; inputOpen = false; answerKey = ""; pinned = false; alertKey = "" }
+    /// Every detected agent the notch knows how to chat with. Nothing is hard-coded: install
+    /// Gemini or Codex and it shows up in the picker after the next scan.
+    var chatAgents: [(id: String, name: String)] {
+        var l: [(id: String, name: String)] = [("claude", assistantName)]
+        for d in detected where d.chat && d.id != "claude" { l.append((d.id, d.name)) }
+        return l
+    }
+
+    func openDetect() {
+        alertKey = ""; answerKey = ""; inputOpen = false; customOpen = false
+        detectOpen = true; pinned = true
+        rescan()
+    }
+    func closeDetect() { detectOpen = false; pinned = false }
+
+    func rescan() {
+        guard !detecting else { return }
+        detecting = true
+        let backend = self.backend
+        Task.detached { [weak self] in
+            let rows = Self.runDetect(backend)
+            await self?.setDetected(rows)
+        }
+    }
+    private func setDetected(_ rows: [DetectedAgent]) { detected = rows; detecting = false }
+
+    nonisolated private static func runDetect(_ backend: String) -> [DetectedAgent] {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: backend)
+        p.arguments = ["detect"]
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = [home + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", env["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
+        p.environment = env
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return [] }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        let list = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] ?? []
+        return list.map { d in
+            DetectedAgent(id: d["id"] as? String ?? "", name: d["name"] as? String ?? "", path: d["path"] as? String ?? "",
+                          version: d["version"] as? String ?? "", installed: d["installed"] as? Bool ?? false,
+                          connected: d["connected"] as? Bool ?? false, chat: d["chat"] as? Bool ?? false,
+                          models: d["models"] as? [String] ?? [])
+        }
+    }
+
+    func closeAll() { detectOpen = false; customOpen = false; inputOpen = false; answerKey = ""; pinned = false; alertKey = "" }
     func toggle() { pinned.toggle(); if !pinned { pickedKey = "" } }
     func cycleDir() { askDirIndex = (askDirIndex + 1) % max(askDirs.count, 1) }
     var askDir: String { askDirs.indices.contains(askDirIndex) ? askDirs[askDirIndex] : "~" }
@@ -419,20 +595,99 @@ final class NotchModel: ObservableObject {
         if a.source == "notch" && !a.answer.isEmpty { answerKey = a.key; AppDelegate.shared?.makeKey() }
     }
 
-    func send(_ text: String) {
+    // MARK: attachments (pasted images / copied image files)
+
+    private static let imageExts: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp"]
+
+    /// Returns true if the clipboard held something to attach (and so ⌘V shouldn't paste text).
+    func attachFromPasteboard() -> Bool {
+        let pb = NSPasteboard.general
+        let files = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? [])
+            .filter { Self.imageExts.contains($0.pathExtension.lowercased()) }
+        if !files.isEmpty { attachments += files.map(\.path).filter { !attachments.contains($0) }; return true }
+        // every image on the clipboard, not just the first (e.g. several copied from Preview/Photos)
+        let imgs = pb.readObjects(forClasses: [NSImage.self]) as? [NSImage] ?? []
+        guard pb.string(forType: .string) == nil, !imgs.isEmpty else { return false }
+        let dir = home + "/.local/state/myzk-agents/pastes"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        var added = false
+        for (i, img) in imgs.enumerated() {
+            guard let tiff = img.tiffRepresentation,
+                  let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { continue }
+            let path = dir + "/paste-\(Int(Date().timeIntervalSince1970 * 1000))-\(i).png"
+            if (try? png.write(to: URL(fileURLWithPath: path))) != nil { attachments.append(path); added = true }
+        }
+        return added
+    }
+
+    private func withAttachments(_ text: String) -> String {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        defer { attachments = [] }
+        guard !attachments.isEmpty else { return t }
+        return (t.isEmpty ? "Look at the attached image(s)." : t) + "\n\n"
+            + attachments.map { "[attached image: \($0)]" }.joined(separator: "\n")
+    }
+
+    /// Model picked by hand for the next ask: "auto" lets the router decide.
+    @Published var askModel = "auto"
+    /// Models the scan found for an agent ("auto" first, so the default is never a surprise).
+    func modelChoices(_ agent: String) -> [String] {
+        let found = detected.first { $0.id == agent }?.models ?? []
+        return found.isEmpty ? [] : ["auto"] + found
+    }
+    private func args(_ model: String) -> [String] { model == "auto" ? [] : ["--model", model] }
+
+    // A model picked for a chat sticks to that chat (across restarts) until changed; new chats start on auto.
+    private let chatModelsFile = home + "/.local/state/myzk-agents/chat-models.json"
+    @Published private(set) var chatModels: [String: String] = [:]
+    private func loadChatModels() {
+        if let d = FileManager.default.contents(atPath: chatModelsFile),
+           let map = try? JSONSerialization.jsonObject(with: d) as? [String: String] { chatModels = map }
+    }
+    func chatModel(_ key: String) -> String { chatModels[key] ?? "auto" }
+    func setChatModel(_ key: String, _ model: String) {
+        chatModels[key] = model == "auto" ? nil : model
+        if let d = try? JSONSerialization.data(withJSONObject: chatModels, options: [.prettyPrinted, .sortedKeys]) {
+            try? d.write(to: URL(fileURLWithPath: chatModelsFile))
+        }
+    }
+    /// Fresh chat → back to auto.
+    func newChat() { askModel = "auto" }
+
+    /// Starts a new conversation from the client window; returns its key so the UI can select it.
+    func start(_ text: String, agent: String, dir: String) -> String? {
+        let t = withAttachments(text)
+        guard !t.isEmpty else { return nil }
+        let id = UUID().uuidString.lowercased()
+        let key = agent + ":" + id
+        setChatModel(key, askModel)
+        runBackend(["ask", t, "--id", id, "--agent", agent] + args(askModel), cwd: (dir as NSString).expandingTildeInPath)
+        askModel = "auto"
+        return key
+    }
+
+    func send(_ text: String) {
+        let t = withAttachments(text)
         guard !t.isEmpty else { return }
         let id = UUID().uuidString.lowercased()
         let dir = (askDir as NSString).expandingTildeInPath
-        runBackend(["ask", t, "--id", id], cwd: dir)
-        pickedKey = "claude:" + id
+        let who = chatAgents.contains { $0.id == askAgent } ? askAgent : "claude"
+        setChatModel(who + ":" + id, askModel)
+        runBackend(["ask", t, "--id", id, "--agent", who] + args(askModel), cwd: dir)
+        askModel = "auto"
+        pickedKey = who + ":" + id
         inputOpen = false
     }
 
     func reply(_ text: String) {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty, let a = answerAgent else { return }
-        runBackend(["ask", t, "--resume", a.ident], cwd: a.cwd.isEmpty ? home : a.cwd)
+        guard let a = answerAgent else { return }
+        reply(text, to: a)
+    }
+
+    func reply(_ text: String, to a: Agent) {
+        let t = withAttachments(text)
+        guard !t.isEmpty else { return }
+        runBackend(["ask", t, "--resume", a.ident, "--agent", a.agent] + args(chatModel(a.key)), cwd: a.cwd.isEmpty ? home : a.cwd)
     }
 
     func forget(_ a: Agent) {
@@ -456,7 +711,9 @@ final class NotchModel: ObservableObject {
     func openTerminal(_ a: Agent) {
         let claude = cfg.str("claudeCommand", "claude")
         let dir = a.cwd.isEmpty ? home : a.cwd
-        let cmd = "cd \(shellQuote(dir)) && \(claude) --resume \(a.ident)"
+        let cmd = a.agent == "codex"
+            ? "cd \(shellQuote(dir)) && codex resume --last"
+            : "cd \(shellQuote(dir)) && \(claude) --resume \(a.session.isEmpty ? a.ident : a.session)"
         let term = cfg.str("terminal", "")
         let p = Process()
         if term.isEmpty || term.contains("xdg-terminal-exec") {
