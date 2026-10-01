@@ -2,10 +2,12 @@
 # Picks the right installer: Omarchy (Linux, Quickshell) or macOS (native SwiftUI).
 #   ./setup.sh            asks (default: detected from this machine)
 #   ./setup.sh omarchy    or: ./setup.sh mac
+#   ./setup.sh omarchy --name NAME   names the backend NAME-agents and the plugin NAME.notch
 set -euo pipefail
 cd "$(dirname "$0")"
 
-choice="${1:-}"
+choice=""
+case "${1:-}" in -*|"") ;; *) choice="$1"; shift ;; esac
 if [ -z "$choice" ]; then
   [ "$(uname)" = "Darwin" ] && def=mac || def=omarchy
   echo "Agent Notch: which version do you want to install?"
@@ -17,8 +19,8 @@ if [ -z "$choice" ]; then
 fi
 
 case "$choice" in
-  omarchy|linux) exec ./install.sh ;;
+  omarchy|linux) exec ./install.sh "$@" ;;
   mac|macos) [ "$(uname)" = "Darwin" ] || { echo "The macOS version needs macOS"; exit 1; }
-             exec ./macos/install.sh ;;
-  *) echo "Usage: $0 [omarchy|mac]"; exit 1 ;;
+             exec ./macos/install.sh "$@" ;;
+  *) echo "Usage: $0 [omarchy|mac] [--name NAME]"; exit 1 ;;
 esac

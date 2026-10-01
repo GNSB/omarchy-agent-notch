@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Agent Notch for macOS: native SwiftUI notch + the same Python backend/hooks.
+#   macos/install.sh [--name NAME]    NAME prefixes the backend and state dir (default: myzk)
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(cd .. && pwd)"
+. "$ROOT/name.sh"
+notch_name "$@"
 BIN="$HOME/.local/bin"
 CONF="$HOME/.config/agent-notch"
 LABEL="com.agentnotch.mac"
@@ -12,14 +15,20 @@ command -v swift >/dev/null || { echo "Needs Swift (xcode-select --install)"; ex
 command -v python3 >/dev/null || { echo "Needs python3"; exit 1; }
 
 echo "→ building"
-swift build -c release
+SRC="$PWD"
+if [ "$N" != myzk ]; then  # build a renamed copy so the app looks for $N-agents
+  SRC="$(mktemp -d)"
+  cp -R Package.swift Sources "$SRC/"
+  apply_name "$SRC"/Sources/AgentNotch/*.swift
+fi
+(cd "$SRC" && swift build -c release)
 mkdir -p "$BIN" "$CONF"
 # A real .app with a stable bundle id + signature: macOS (TCC) remembers the folder/file
 # permissions you grant it across rebuilds. Ad-hoc binaries get a new identity every build
 # and are asked again each time.
 APP="$HOME/Applications/Agent Notch.app"
 mkdir -p "$APP/Contents/MacOS"
-install -m 755 .build/release/AgentNotch "$APP/Contents/MacOS/agent-notch"
+install -m 755 "$SRC/.build/release/AgentNotch" "$APP/Contents/MacOS/agent-notch"
 cat > "$APP/Contents/Info.plist" <<IP
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -49,7 +58,9 @@ else
 fi
 rm -f "$BIN/agent-notch"
 ln -s "$APP/Contents/MacOS/agent-notch" "$BIN/agent-notch"
-install -m 755 "$ROOT/bin/myzk-agents" "$BIN/myzk-agents"
+install -m 755 "$ROOT/bin/myzk-agents" "$BIN/$N-agents"
+apply_name "$BIN/$N-agents"
+echo "$N" > "$NAME_FILE"
 install -m 755 "$ROOT/bin/claude-usage" "$BIN/claude-usage"
 cp "$ROOT/plugin/i18n.json" "$CONF/i18n.json"
 
@@ -66,7 +77,7 @@ PY
 fi
 
 echo "→ wiring Claude Code hooks"
-python3 - "$HOME/.claude/settings.json" "$BIN/myzk-agents" <<'PY'
+python3 - "$HOME/.claude/settings.json" "$BIN/$N-agents" <<'PY'
 import json, os, shutil, sys
 path, bin_path = sys.argv[1:]
 d = {}

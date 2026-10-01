@@ -60,6 +60,18 @@ enables the plugin in `~/.config/omarchy/shell.json`, **merges** the hooks into 
 Claude Code hooks and registers a LaunchAgent so it starts at login and restarts if it dies.
 Uninstall with `macos/uninstall.sh`.
 
+**Your own name.** By default the backend is `myzk-agents`, the Omarchy plugin `myzk.notch` and the state
+`~/.local/state/myzk-agents`. Pick another prefix at install time and everything (backend, plugin id, IPC target,
+state dir, hooks) follows it:
+
+```bash
+./setup.sh omarchy --name jorge     # → jorge-agents, jorge.notch, ~/.local/state/jorge-agents
+NOTCH_NAME=jorge ./install.sh       # same thing
+```
+
+The name is remembered in `~/.config/agent-notch/name`; reinstalling with a different one removes the old plugin
+and hooks and moves your chats over. In the rest of this README, read `myzk` as your name.
+
 ## macOS app
 
 Everything the notch does on Omarchy, plus a full window for when the notch is too small:
