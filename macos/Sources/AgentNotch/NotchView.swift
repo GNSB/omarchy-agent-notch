@@ -447,80 +447,146 @@ private struct CustomBody: View {
     private var tint: Color {
         isClaude ? mix(Color(hex: "#EEF2F7"), m.claudeColor, 0.28) : mix(Color(hex: "#EEF2F7"), Color(hex: m.palette[0]), 0.16)
     }
+    private var moodTone: Color { NotchModel.stateColor[m.customMood] ?? .gray }
 
-    private func pill(_ title: String, _ on: Bool, _ action: @escaping () -> Void) -> some View {
+    // MARK: building blocks
+
+    /// Segmented control: one capsule that slides under the selected option.
+    private func segmented(_ items: [(id: String, title: String)], selected: String, _ pick: @escaping (String) -> Void) -> some View {
+        HStack(spacing: 2) {
+            ForEach(items, id: \.id) { it in
+                Text(it.title).font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 11).padding(.vertical, 5)
+                    .foregroundStyle(selected == it.id ? Color.white : Color.secondary)
+                    .background { if selected == it.id { Capsule().fill(m.claudeColor.opacity(0.85)) } }
+                    .contentShape(Capsule())
+                    .onTapGesture { withAnimation(.smooth(duration: 0.25)) { pick(it.id) } }
+            }
+        }
+        .padding(2).background(Capsule().fill(Color.white.opacity(0.07)))
+    }
+
+    private func section<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title).font(.system(size: 10, weight: .semibold)).tracking(0.6).textCase(.uppercase)
+                .foregroundStyle(.secondary.opacity(0.7))
+            content()
+        }
+    }
+
+    private func chip(_ title: String, _ on: Bool, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(.system(size: 11, weight: .medium))
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(Capsule().fill(on ? m.claudeColor.opacity(0.3) : Color.white.opacity(0.08)))
-                .foregroundStyle(on ? m.claudeColor : Color.secondary)
+            HStack(spacing: 4) {
+                if on { Image(systemName: "checkmark").font(.system(size: 8, weight: .bold)) }
+                Text(title.capitalized).font(.system(size: 11, weight: .medium))
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Capsule().fill(on ? m.claudeColor.opacity(0.26) : Color.white.opacity(0.07)))
+            .foregroundStyle(on ? m.claudeColor : Color.secondary)
+            .animation(.smooth(duration: 0.2), value: on)
         }.buttonStyle(.plain)
     }
 
+    private func styleTile(_ st: String) -> some View {
+        let on = style == st
+        return VStack(spacing: 5) {
+            FaceView(mood: "idle", tint: tint, size: 30, style: st, accessory: [])
+                .frame(width: 38, height: 38)
+            Text(m.tr("custom.style." + st)).font(.system(size: 10, weight: .medium))
+                .foregroundStyle(on ? m.claudeColor : .secondary)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 12).fill(on ? m.claudeColor.opacity(0.14) : Color.white.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(on ? m.claudeColor.opacity(0.7) : .clear, lineWidth: 1.2))
+        .contentShape(Rectangle())
+        .onTapGesture { withAnimation(.smooth(duration: 0.2)) { m.setStyle(st) } }
+    }
+
+    // MARK: body
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(m.tr("custom.title")).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 14) {
+            // header
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(m.tr("custom.title").capitalized).font(.system(size: 15, weight: .semibold))
+                    Text(m.tr("custom.hint")).font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.7))
+                }
                 Spacer()
-                pill(m.assistantName, isClaude) { m.customTarget = "claude" }
-                pill("Bots", !isClaude) { m.customTarget = "grok" }
-                pill(m.tr("custom.done"), false) { m.closeCustom(); m.pinned = false }
+                segmented([("claude", m.assistantName), ("grok", "Bots")], selected: m.customTarget) { m.customTarget = $0 }
+                Button { m.closeCustom(); m.pinned = false } label: {
+                    Text(m.tr("custom.done")).font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 16).padding(.vertical, 6)
+                        .background(Capsule().fill(m.claudeColor))
+                        .foregroundStyle(.white).contentShape(Capsule())
+                }.buttonStyle(.plain)
             }
-            HStack(alignment: .top, spacing: 16) {
-                VStack(spacing: 6) {
-                    FaceView(mood: m.customMood, tint: tint, size: 70, glowAlways: true, style: style, accessory: gear,
+
+            HStack(alignment: .top, spacing: 14) {
+                // live preview
+                VStack(spacing: 10) {
+                    FaceView(mood: m.customMood, tint: tint, size: 74, glowAlways: true, style: style, accessory: gear,
                              reaction: m.reactions["preview"] ?? "")
-                        .frame(width: 84, height: 84)
+                        .frame(width: 92, height: 92)
                         .contentShape(Rectangle())
                         .onTapGesture { m.poke("preview") }
-                    HStack(spacing: 6) {
-                        pill(m.tr("custom.annoy"), false) { m.react("preview", "annoyed", 1.6) }
-                        pill(m.tr("custom.dizzy"), false) { m.react("preview", "dizzy", 2.4) }
+                    Menu {
+                        ForEach(moods, id: \.self) { mo in Button(m.tr("state." + mo)) { m.customMood = mo } }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Circle().fill(moodTone).frame(width: 6, height: 6)
+                            Text(m.tr("state." + m.customMood)).font(.system(size: 11, weight: .medium))
+                            Image(systemName: "chevron.up.chevron.down").font(.system(size: 8))
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Capsule().fill(Color.white.opacity(0.08)))
+                        .foregroundStyle(.primary)
+                    }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    HStack(spacing: 5) {
+                        chip(m.tr("custom.annoy"), false) { m.react("preview", "annoyed", 1.6) }
+                        chip(m.tr("custom.dizzy"), false) { m.react("preview", "dizzy", 2.4) }
                     }
                 }
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 6) {
-                        Text(m.tr("custom.style")).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
-                        ForEach(faceStyles, id: \.self) { st in pill(m.tr("custom.style." + st), style == st) { m.setStyle(st) } }
-                    }
-                    HStack(alignment: .top, spacing: 6) {
-                        Text(m.tr("custom.gear")).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 74), spacing: 5)], alignment: .leading, spacing: 5) {
-                            pill(m.tr("custom.none"), gear.isEmpty) { m.clearGear() }
-                            ForEach(faceAccessories, id: \.self) { a in pill(a, gear.contains(a)) { m.toggleGear(a) } }
+                .padding(.vertical, 14).frame(width: 156)
+                .background(RoundedRectangle(cornerRadius: 18).fill(mix(m.cardColor, moodTone, 0.07)))
+                .animation(.smooth(duration: 0.4), value: m.customMood)
+
+                // options
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        section(m.tr("custom.style")) {
+                            HStack(spacing: 6) { ForEach(faceStyles, id: \.self) { styleTile($0) } }
                         }
-                    }
-                    HStack(spacing: 6) {
-                        Text(m.tr("custom.tap")).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
-                        ForEach(["chat", "terminal", "play"], id: \.self) { a in
-                            pill(m.tr("custom.tap." + a), m.petTap == a) { m.setPetTap(a) }
-                        }
-                    }
-                    if isClaude {
-                        HStack(spacing: 6) {
-                            Text(m.tr("custom.color")).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
-                            ForEach(swatches, id: \.self) { hex in
-                                Circle().fill(Color(hex: hex)).frame(width: 18, height: 18)
-                                    .overlay(Circle().stroke(.white.opacity(m.cfg.str("claudeColor", "#E0784F").lowercased() == hex.lowercased() ? 0.9 : 0), lineWidth: 1.5))
-                                    .onTapGesture { m.setColor(hex) }
+                        section(m.tr("custom.gear")) {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 78), spacing: 5)], alignment: .leading, spacing: 5) {
+                                chip(m.tr("custom.none"), gear.isEmpty) { m.clearGear() }
+                                ForEach(faceAccessories, id: \.self) { a in chip(a, gear.contains(a)) { m.toggleGear(a) } }
                             }
                         }
+                        if isClaude {
+                            section(m.tr("custom.color")) {
+                                HStack(spacing: 8) {
+                                    ForEach(swatches, id: \.self) { hex in
+                                        let on = m.cfg.str("claudeColor", "#E0784F").lowercased() == hex.lowercased()
+                                        Circle().fill(Color(hex: hex)).frame(width: 22, height: 22)
+                                            .overlay(Circle().stroke(.white.opacity(on ? 0.95 : 0), lineWidth: 2).padding(-3))
+                                            .scaleEffect(on ? 1.08 : 1)
+                                            .animation(.smooth(duration: 0.2), value: on)
+                                            .onTapGesture { m.setColor(hex) }
+                                    }
+                                }.padding(.leading, 3)
+                            }
+                        }
+                        section(m.tr("custom.tap")) {
+                            segmented(["chat", "terminal", "play"].map { ($0, m.tr("custom.tap." + $0)) }, selected: m.petTap) { m.setPetTap($0) }
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(height: 262)
             }
-            HStack(spacing: 5) {
-                ForEach(moods, id: \.self) { mo in
-                    Button { m.customMood = mo } label: {
-                        Text(m.tr("state." + mo)).font(.system(size: 10))
-                            .padding(.horizontal, 7).padding(.vertical, 3)
-                            .background(Capsule().fill(m.customMood == mo ? (NotchModel.stateColor[mo] ?? .gray).opacity(0.3) : Color.white.opacity(0.06)))
-                            .foregroundStyle(m.customMood == mo ? (NotchModel.stateColor[mo] ?? .gray) : Color.secondary)
-                    }.buttonStyle(.plain)
-                }
-            }
-            Text(m.tr("custom.hint")).font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.6))
         }
-        .padding(14)
+        .padding(16)
         .background(RoundedRectangle(cornerRadius: 18).fill(m.cardColor))
         .padding(.horizontal, 14).padding(.bottom, 14).padding(.top, 2)
         .onExitCommand { m.closeCustom() }
