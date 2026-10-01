@@ -268,15 +268,17 @@ struct FaceView: View {
                               control: CGPoint(x: s * 0.72, y: s * 0.5))
             ctx.stroke(tail, with: .color(dark), style: StrokeStyle(lineWidth: s * 0.11, lineCap: .round))
         case "dog":
+            // long floppy ears hanging past the cheeks, in a warm brown so they don't read as monkey ears
+            let ear = mix(base, Color(hex: "#6B3F22"), 0.62)
             for side in [-1.0, 1.0] {
                 let flop = sin(t * 3 + side) * 0.05
-                ctx.fill(oval(side * s * 0.47, -s * 0.02, s * 0.26, s * 0.5, rot: side * (0.25 + flop)), with: .color(dark))
+                ctx.fill(oval(side * s * 0.5, s * 0.1, s * 0.3, s * 0.66, rot: side * (0.16 + flop)), with: .color(ear))
             }
             var tail = Path()
             let sw = sin(t * (happy ? 14 : 3)) * s * 0.1
             tail.move(to: CGPoint(x: s * 0.36, y: s * 0.3))
             tail.addQuadCurve(to: CGPoint(x: s * 0.66 + sw, y: s * 0.02), control: CGPoint(x: s * 0.6, y: s * 0.3))
-            ctx.stroke(tail, with: .color(dark), style: StrokeStyle(lineWidth: s * 0.1, lineCap: .round))
+            ctx.stroke(tail, with: .color(ear), style: StrokeStyle(lineWidth: s * 0.1, lineCap: .round))
         case "hamster":
             for side in [-1.0, 1.0] {
                 ctx.fill(oval(side * s * 0.34, -s * 0.42, s * 0.3, s * 0.3), with: .color(base))
@@ -303,12 +305,20 @@ struct FaceView: View {
             }
             ctx.stroke(w, with: .color(.white.opacity(0.75)), style: StrokeStyle(lineWidth: s * 0.014, lineCap: .round))
         case "dog":
-            ctx.fill(oval(0, s * 0.2, s * 0.38, s * 0.26), with: .color(mix(base, .white, 0.55)))
-            ctx.fill(oval(0, s * 0.14, s * 0.11, s * 0.07), with: .color(ink))
+            let patch = mix(base, Color(hex: "#6B3F22"), 0.62)
+            ctx.fill(oval(s * 0.17, s * 0.0, s * 0.3, s * 0.34, rot: 0.2), with: .color(patch.opacity(0.9)))   // eye patch
+            ctx.fill(oval(0, s * 0.22, s * 0.5, s * 0.34), with: .color(mix(base, .white, 0.6)))               // snout
+            ctx.fill(oval(0, s * 0.13, s * 0.16, s * 0.1), with: .color(ink))                                  // nose
+            var mouth = Path()
+            mouth.move(to: CGPoint(x: 0, y: s * 0.18)); mouth.addLine(to: CGPoint(x: 0, y: s * 0.25))
+            mouth.move(to: CGPoint(x: -s * 0.09, y: s * 0.27))
+            mouth.addQuadCurve(to: CGPoint(x: 0, y: s * 0.25), control: CGPoint(x: -s * 0.05, y: s * 0.31))
+            mouth.addQuadCurve(to: CGPoint(x: s * 0.09, y: s * 0.27), control: CGPoint(x: s * 0.05, y: s * 0.31))
+            ctx.stroke(mouth, with: .color(ink.opacity(0.7)), style: StrokeStyle(lineWidth: s * 0.016, lineCap: .round))
             if look == "done" || look == "working" || look == "upload" {
-                let len = s * (0.06 + 0.02 * sin(t * 8))
-                ctx.fill(Path(roundedRect: CGRect(x: -s * 0.04, y: s * 0.24, width: s * 0.08, height: len),
-                              cornerRadius: s * 0.04), with: .color(pink))
+                let len = s * (0.1 + 0.025 * sin(t * 8))
+                ctx.fill(Path(roundedRect: CGRect(x: -s * 0.05, y: s * 0.27, width: s * 0.1, height: len),
+                              cornerRadius: s * 0.05), with: .color(pink))
             }
         case "hamster":
             for side in [-1.0, 1.0] {

@@ -501,15 +501,19 @@ final class NotchModel: ObservableObject {
         let files = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? [])
             .filter { Self.imageExts.contains($0.pathExtension.lowercased()) }
         if !files.isEmpty { attachments += files.map(\.path); return true }
-        guard pb.string(forType: .string) == nil,
-              let img = NSImage(pasteboard: pb), let tiff = img.tiffRepresentation,
-              let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return false }
+        // every image on the clipboard, not just the first (e.g. several copied from Preview/Photos)
+        let imgs = pb.readObjects(forClasses: [NSImage.self]) as? [NSImage] ?? []
+        guard pb.string(forType: .string) == nil, !imgs.isEmpty else { return false }
         let dir = home + "/.local/state/myzk-agents/pastes"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let path = dir + "/paste-\(Int(Date().timeIntervalSince1970 * 1000)).png"
-        guard (try? png.write(to: URL(fileURLWithPath: path))) != nil else { return false }
-        attachments.append(path)
-        return true
+        var added = false
+        for (i, img) in imgs.enumerated() {
+            guard let tiff = img.tiffRepresentation,
+                  let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { continue }
+            let path = dir + "/paste-\(Int(Date().timeIntervalSince1970 * 1000))-\(i).png"
+            if (try? png.write(to: URL(fileURLWithPath: path))) != nil { attachments.append(path); added = true }
+        }
+        return added
     }
 
     private func withAttachments(_ text: String) -> String {
