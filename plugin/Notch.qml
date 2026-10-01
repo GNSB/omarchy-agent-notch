@@ -118,7 +118,7 @@ Item {
     Text {
       id: mbLbl
       anchors.centerIn: parent
-      text: mb.d && mb.d.model ? (mb.bad ? "⚠ " : "⑂ ") + root.capitalize(mb.d.model) + (mb.d.route ? " · " + mb.d.route : "") : ""
+      text: mb.d && mb.d.model ? (mb.bad ? "⚠ " : "⑂ ") + root.capitalize(mb.d.model) + (mb.d.route ? " · " + root.routeLabel(mb.d.route) : "") : ""
       color: mb.bad ? "#F5A524" : "#9AA0AA"
       font.family: root.fontFamily
       font.pixelSize: 10
@@ -624,6 +624,8 @@ Item {
     root.clientOpen = true
   }
 
+  // How the router picked the model, in the UI language ("reglas", "escalado ↑"…).
+  function routeLabel(r) { var l = root.tr("route." + r); return l === "route." + r ? r : l }
   function capitalize(s) { s = String(s || ""); return s.charAt(0).toUpperCase() + s.slice(1) }
   function fmtTokens(n) {
     n = Number(n || 0)

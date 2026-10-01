@@ -10,6 +10,8 @@ myzk.notch overlay watches. Writers:
   myzk-agents rm AGENT ID
   myzk-agents ask PROMPT [--resume SID | --id NEW_UUID] [--agent claude|codex]   run an agent headless (notch input)
   myzk-agents detect               JSON: which coding agents are installed on this machine
+  myzk-agents route PROMPT         dry run of the router's free rules (tier + signals)
+  myzk-agents router-stats         how asks were routed, failures and escalations per tier
 
 Readers:
   myzk-agents list                 one-shot table
@@ -458,18 +460,100 @@ _ROUTER_PROMPT = (
     "Task:\n")
 
 
-def route_model(prompt):
-    """Cheap middleware: Haiku classifies the task, then we pick the model to run it.
-    Returns (model alias for --model or None, how) where how is auto|short|fallback|off."""
-    r = cfg("modelRouter", {})
-    if not r.get("enabled", True):
-        return None, "off"
-    tiers = {"simple": r.get("simple", "haiku"), "medium": r.get("medium", "sonnet"),
-             "complex": r.get("complex", "opus")}
-    fallback = tiers.get(r.get("fallback", "medium"))
-    # Skip the classifier call for trivially short prompts: it would cost more than it saves.
-    if len(prompt.strip()) < int(r.get("minChars", 40)):
-        return tiers["simple"], "short"
+TIERS = ("simple", "medium", "complex")
+ROUTER_LOG = os.path.join(STATE_DIR, "router.jsonl")
+ROUTER_CACHE = os.path.join(STATE_DIR, "router-cache.json")
+
+# Stage 1 signals (es + en). Override or extend them in config.json under
+# modelRouter.words: {"simple": [...], "medium": [...], "complex": [...]}.
+ROUTER_WORDS = {
+    "simple": [r"\bhola\b", r"\bhello\b", r"\bgracias\b", r"\bthanks\b", r"\brenombra", r"\brename",
+               r"\bresume\b", r"\bresumen\b", r"\bsummar", r"\btraduc", r"\btranslat", r"\btypo\b",
+               r"\bformatea", r"\bformat\b", r"qu[eé] hora", r"\bcu[aá]l es\b", r"\bwhat is\b",
+               r"\bmuestra\b", r"\bshow me\b", r"\blista\b", r"\blist\b", r"\bestado\b", r"\bstatus\b",
+               r"\bcuántos?\b", r"\bhow many\b", r"\bconvierte\b", r"\bconvert\b"],
+    "medium": [r"\barregla", r"\bfix\b", r"\bbug\b", r"\berror\b", r"\bagrega", r"\ba[ñn]ade",
+               r"\badd\b", r"\bimplement", r"\btest", r"\bprueba", r"\bexplica", r"\bexplain",
+               r"\bscript\b", r"\bfunci[oó]n\b", r"\bfunction\b", r"\bendpoint", r"\bcomponente?\b"],
+    "complex": [r"\brefactor", r"\barquitectura", r"\barchitect", r"\bmigra", r"\bseguridad\b",
+                r"\bsecurity\b", r"\baudit", r"\bvulnerab", r"\bdepura", r"\bdebug", r"\bpor qu[eé] falla",
+                r"\bwhy (does|is) .* fail", r"\brace condition", r"\bdeadlock", r"\brendimiento\b",
+                r"\bperformance\b", r"\boptimiz", r"\bdiseñ[ao]", r"\bdesign\b", r"\bdesde cero\b",
+                r"\bfrom scratch\b", r"\btodo el (proyecto|repo)", r"\bwhole (project|repo|codebase)",
+                r"\bconcurren", r"\bescal(a|ar)bilidad", r"\bscalab"],
+}
+_PATH_RE = re.compile(r"(?:~|/|\./)[\w.\-]+(?:/[\w.\-]+)+|\b[\w\-]+\.(?:py|js|ts|tsx|qml|swift|kt|go|rs|java|c|cpp|h|sql|json|ya?ml|md)\b")
+_STEP_RE = re.compile(r"(?m)^\s*(?:\d+[.)]|[-*•])\s+")
+
+
+def _router_cfg():
+    r = dict(cfg("modelRouter", {}) or {})
+    words = {k: list(v) for k, v in ROUTER_WORDS.items()}
+    for k, extra in (r.get("words") or {}).items():
+        if k in words and isinstance(extra, list):
+            words[k] += extra
+    r["_words"] = words
+    return r
+
+
+def classify_rules(prompt, r=None):
+    """Stage 1, free: keyword hits + shape of the prompt. Returns (tier or None, signals).
+    None means "not sure" and the request goes on to the next stage."""
+    r = r or _router_cfg()
+    text = prompt.lower()
+    body = re.sub(r"\[attached image: [^\]]+\]", "", text)
+    hits = {k: sum(1 for w in ws if re.search(w, body)) for k, ws in r["_words"].items()}
+    paths = len(set(_PATH_RE.findall(body)))
+    steps = len(_STEP_RE.findall(prompt))
+    n = len(body.strip())
+    images = text.count("[attached image:")
+    sig = {"chars": n, "paths": paths, "steps": steps, "images": images, **{"w_" + k: v for k, v in hits.items()}}
+    # Size and structure push towards harder tiers on their own.
+    heavy = (n > int(r.get("longChars", 1500))) + (paths >= 4) + (steps >= 4)
+    if hits["complex"] >= 2 or (hits["complex"] and (heavy or n > 600)) or heavy >= 2:
+        return "complex", sig
+    if n < int(r.get("minChars", 40)) and not hits["complex"] and not hits["medium"] and not images:
+        return "simple", dict(sig, short=True)
+    if hits["simple"] and not hits["medium"] and not hits["complex"] and n < 300 and not heavy:
+        return "simple", sig
+    if hits["medium"] and not hits["complex"] and not hits["simple"] and not heavy and n < 1200:
+        return "medium", sig
+    return None, sig
+
+
+def _cache_key(prompt):
+    import hashlib
+    norm = re.sub(r"\s+", " ", re.sub(r"\[attached image: [^\]]+\]", "[img]", prompt.lower())).strip()
+    return hashlib.sha1(norm.encode()).hexdigest()
+
+
+def _cache_get(prompt, ttl):
+    if ttl <= 0:
+        return None
+    c = _read_json(ROUTER_CACHE) if os.path.exists(ROUTER_CACHE) else {}
+    hit = (c or {}).get(_cache_key(prompt))
+    return hit["tier"] if hit and time.time() - hit.get("t", 0) < ttl and hit.get("tier") in TIERS else None
+
+
+def _cache_put(prompt, tier, ttl):
+    if ttl <= 0:
+        return
+    try:
+        c = _read_json(ROUTER_CACHE) if os.path.exists(ROUTER_CACHE) else {}
+        c = {k: v for k, v in (c or {}).items() if time.time() - v.get("t", 0) < ttl}
+        c[_cache_key(prompt)] = {"tier": tier, "t": time.time()}
+        if len(c) > 500:
+            c = dict(sorted(c.items(), key=lambda kv: kv[1]["t"])[-500:])
+        tmp = ROUTER_CACHE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(c, f)
+        os.replace(tmp, ROUTER_CACHE)
+    except OSError:
+        pass
+
+
+def _classify_llm(prompt, r):
+    """Stage 3: a small model labels the task. Returns a tier or None."""
     try:
         out = subprocess.run(
             [_claude_bin(), "-p", _ROUTER_PROMPT + prompt[:4000], "--model", r.get("router", "haiku"),
@@ -477,9 +561,78 @@ def route_model(prompt):
              "--disable-slash-commands", "--no-session-persistence"],
             capture_output=True, text=True, timeout=int(r.get("timeout", 30)))
         word = re.search(r"simple|medium|complex", out.stdout.lower())
-        return (tiers[word.group(0)], "auto") if word else (fallback, "fallback")
+        return word.group(0) if word else None
     except Exception:
-        return fallback, "fallback"
+        return None
+
+
+def route_model(prompt):
+    """Decision tree for the model of a new ask:
+      1. rules      free heuristics (keywords, length, paths, steps, images)
+      2. cache      same prompt seen recently → same tier, no call
+      3. auto       Haiku classifies only what the rules weren't sure about
+      4. fallback   the default tier when the classifier fails
+    Returns (model alias or None, how, tier, signals); how is rules|short|cache|auto|fallback|off."""
+    r = _router_cfg()
+    if not r.get("enabled", True):
+        return None, "off", None, {}
+    tiers = {"simple": r.get("simple", "haiku"), "medium": r.get("medium", "sonnet"),
+             "complex": r.get("complex", "opus")}
+    tier, sig = classify_rules(prompt, r) if r.get("rules", True) else (None, {})
+    if tier:
+        return tiers[tier], ("short" if sig.get("short") else "rules"), tier, sig
+    ttl = float(r.get("cacheTTL", 86400))
+    tier = _cache_get(prompt, ttl)
+    if tier:
+        return tiers[tier], "cache", tier, sig
+    tier = _classify_llm(prompt, r)
+    if tier:
+        _cache_put(prompt, tier, ttl)
+        return tiers[tier], "auto", tier, sig
+    tier = r.get("fallback", "medium")
+    return tiers.get(tier), "fallback", tier, sig
+
+
+def next_tier(tier):
+    """Escalation ladder: simple → medium → complex → None."""
+    i = TIERS.index(tier) if tier in TIERS else len(TIERS) - 1
+    return TIERS[i + 1] if i + 1 < len(TIERS) else None
+
+
+def log_route(**row):
+    """One line per routed ask, so the rules can be tuned with real data (`router-stats`)."""
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(ROUTER_LOG, "a") as f:
+            f.write(json.dumps(dict(row, t=round(time.time(), 1)), ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def router_stats():
+    rows = []
+    try:
+        with open(ROUTER_LOG) as f:
+            rows = [json.loads(l) for l in f if l.strip()]
+    except (OSError, ValueError):
+        pass
+    if not rows:
+        return "No routed asks yet."
+    from collections import Counter
+    by_how = Counter(r.get("how") for r in rows)
+    by_tier = Counter(r.get("tier") for r in rows)
+    lines = [f"{len(rows)} routed asks",
+             "stage:  " + "  ".join(f"{k} {v}" for k, v in by_how.most_common()),
+             "tier:   " + "  ".join(f"{k} {v}" for k, v in by_tier.most_common())]
+    # Per starting tier: escalations out of "simple" are the rules' false negatives.
+    for t in TIERS:
+        sub = [r for r in rows if (r.get("start") or r.get("tier")) == t]
+        if sub:
+            fail = sum(1 for r in sub if r.get("failed"))
+            esc = sum(1 for r in sub if r.get("escalated"))
+            secs = sum(r.get("secs", 0) for r in sub) / len(sub)
+            lines.append(f"  {t:8s} failed {fail}/{len(sub)}  escalated {esc}  avg {secs:.0f}s")
+    return "\n".join(lines) + "\n"
 
 
 def ask(prompt, resume=None, new_id=None, agent="claude", model=None):
@@ -504,21 +657,24 @@ def ask(prompt, resume=None, new_id=None, agent="claude", model=None):
         os.dup2(devnull, fd)
     update("claude", sid, runner=os.getpid())
 
-    args = [_claude_bin(), "-p", prompt, "--output-format", "json",
+    base = [_claude_bin(), "-p", prompt, "--output-format", "json",
             "--permission-mode", cfg("permissionMode", "auto"),
             "--append-system-prompt", cfg("systemPrompt", "") or tr("systemPrompt")]
-    args += ["--resume", session] if resume else ["--session-id", sid, "-n", "Notch"]
+    how, tier, sig, t0 = "manual" if model else "keep", None, {}, time.time()
+    start = None
     if model:  # chosen by the user in the notch: bypass the router
-        args += ["--model", model]
         update("claude", sid, model=model, route="manual")
     elif not resume:  # follow-ups keep the model (and prompt cache) of the session
         update("claude", sid, detail=tr("routing"))
-        model, how = route_model(prompt)
+        model, how, tier, sig = route_model(prompt)
+        start = tier
         if model:
-            args += ["--model", model]
             update("claude", sid, model=model, route=how, detail=tr("thinking"))
+    r = _router_cfg()
     log = os.path.join(STATE_DIR, "ask.log")
-    try:
+    escalated, run_id = [], (session if resume else sid)
+
+    def run(args):
         out = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=3600)
         # mise may print a banner first; the result is the last JSON line.
         line = next((l for l in reversed(out.stdout.splitlines()) if l.startswith("{")), "{}")
@@ -530,11 +686,33 @@ def ask(prompt, resume=None, new_id=None, agent="claude", model=None):
         if failed:
             with open(log, "a") as f:
                 f.write(f"--- {time.ctime()} rc={out.returncode}\n{out.stdout[-2000:]}\n{out.stderr[-2000:]}\n")
-        real = data.get("session_id")
-        if real:  # resumed runs may fork a new id: the chat keeps its key, resume follows the real one
-            session = real
-    except Exception as e:  # timeout, missing binary…
-        answer, failed = tr("couldNotComplete", error=e), True
+        return answer, failed, data.get("session_id")
+
+    while True:
+        args = base + (["--resume", session] if resume else ["--session-id", run_id, "-n", "Notch"])
+        if model:
+            args += ["--model", model]
+        try:
+            answer, failed, real = run(args)
+            if real:  # resumed runs may fork a new id: the chat keeps its key, resume follows the real one
+                session = real
+        except Exception as e:  # timeout, missing binary…
+            answer, failed = tr("couldNotComplete", error=e), True
+        # Fallback: a routed new ask that failed climbs one tier and tries again, in a fresh session.
+        up = next_tier(tier) if failed and not resume and how not in ("manual", "keep") \
+            and r.get("escalate", True) and len(escalated) < int(r.get("maxEscalations", 2)) else None
+        if not up or not (r.get(up) or {"medium": "sonnet", "complex": "opus"}.get(up)):
+            break
+        escalated.append(model)
+        tier, model = up, r.get(up) or {"medium": "sonnet", "complex": "opus"}[up]
+        if session != sid:
+            update("claude", session, remove=True)
+        run_id = session = str(uuid.uuid4())
+        update("claude", sid, "working", model=model, route="escalated",
+               detail=tr("escalating", model=model.capitalize()))
+    if tier or how not in ("manual", "keep"):
+        log_route(how=how, start=start, tier=tier, model=model, escalated=escalated, failed=failed,
+                  secs=round(time.time() - t0, 1), **sig)
     first = next((l for l in answer.splitlines() if l.strip()), answer)
     first = re.sub(r"[*_`#>]+", "", first).strip()
     if session != sid:
@@ -836,6 +1014,11 @@ def main():
             ask(args[1], opts.get("--resume"), opts.get("--id"), opts.get("--agent", "claude"), opts.get("--model"))
         elif cmd == "detect":
             print(json.dumps(detect_agents()))
+        elif cmd == "route" and len(args) >= 2:   # dry run: which tier would the rules pick?
+            tier, sig = classify_rules(args[1])
+            print(json.dumps({"tier": tier, "signals": sig}, ensure_ascii=False))
+        elif cmd == "router-stats":
+            sys.stdout.write(router_stats())
         elif cmd == "list":
             sys.stdout.write(render())
         elif (cmd == "set" and len(args) >= 4) or (cmd == "rm" and len(args) >= 3):

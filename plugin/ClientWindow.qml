@@ -606,7 +606,7 @@ Scope {
                 Text {
                   id: mbl
                   anchors.centerIn: parent
-                  text: cw.current && cw.current.model ? "⑂ " + cw.n.capitalize(cw.current.model) + (cw.current.route ? " · " + cw.current.route : "") : ""
+                  text: cw.current && cw.current.model ? "⑂ " + cw.n.capitalize(cw.current.model) + (cw.current.route ? " · " + cw.n.routeLabel(cw.current.route) : "") : ""
                   color: cw.current && cw.current.route === "fallback" ? "#F5A524" : "#9AA0AA"
                   font.family: cw.font; font.pixelSize: 10; font.weight: Font.DemiBold
                 }
