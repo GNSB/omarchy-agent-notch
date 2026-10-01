@@ -50,6 +50,7 @@ struct ClientView: View {
         .background(LinearGradient(colors: [m.cardColor, Color(hex: "#0E0E11")], startPoint: .top, endPoint: .bottom))
         .environment(\.colorScheme, .dark)
         .onAppear {
+            g.startAutoRefresh { AppDelegate.shared?.clientWindow?.isVisible == true }
             m.rescan(); refreshDirs()
             g.scan(m.cfg.list("projectDirs", ["~/Projects/*"])); followChat()
         }

@@ -98,31 +98,45 @@ final class GitModel: ObservableObject {
         refresh()
     }
 
-    func refresh() {
+    @Published var updatedAt: Date?
+    private var timer: Timer?
+    private var ticks = 0
+    private var lightRunning = false
+
+    /// Keeps the open repo live: status/commits every 3 s, remote connectivity every minute,
+    /// only while `isActive()` (the client window is on screen).
+    func startAutoRefresh(isActive: @escaping () -> Bool) {
+        guard timer == nil else { return }
+        timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, isActive(), !self.root.isEmpty, !self.busy else { return }
+                self.ticks += 1
+                if self.ticks % 20 == 0 { self.refresh(silent: true) } else { self.refreshLocal() }
+            }
+        }
+    }
+
+    /// Full reload (repo, status, commits, remotes). `silent` skips the spinner.
+    func refresh(silent: Bool = false) {
         gen += 1; let me = gen
-        busy = true
+        if !silent { busy = true }
         let dir = asked
         Task {
             let top = (await Self.git(["rev-parse", "--show-toplevel"], dir)).trimmingCharacters(in: .whitespacesAndNewlines)
             guard me == gen else { return }
             guard !top.hasPrefix("ERR"), !top.isEmpty else { root = ""; files = []; commits = []; remotes = []; busy = false; return }
             root = top
-            async let st = Self.git(["status", "--porcelain=v1", "-b"], top)
-            async let log = Self.git(["log", "-40", "--pretty=format:%h%x09%s%x09%an%x09%ar"], top)
-            async let hd = Self.git(["rev-parse", "--short", "HEAD"], top)
-            async let rem = Self.git(["remote", "-v"], top)
-            let (s, l, h, r) = await (st, log, hd, rem)
+            await loadLocal(top)
+            let r = await Self.git(["remote", "-v"], top)
             guard me == gen else { return }
-            parse(s)
-            head = h.trimmingCharacters(in: .whitespacesAndNewlines)
-            commits = l.split(separator: "\n").compactMap {
-                let p = $0.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-                return p.count == 4 ? Commit(hash: p[0], subject: p[1], author: p[2], date: p[3]) : nil
-            }
             var seen = Set<String>(), rows: [Remote] = []
             for line in r.split(separator: "\n") where line.hasSuffix("(fetch)") {
                 let p = line.split(whereSeparator: { $0 == "\t" || $0 == " " }).map(String.init)
-                if p.count >= 2, seen.insert(p[0]).inserted { rows.append(Remote(name: p[0], url: p[1], ok: nil, note: "checking…")) }
+                if p.count >= 2, seen.insert(p[0]).inserted {
+                    // keep the last result on screen while re-checking, no flicker back to "checking…"
+                    let old = remotes.first { $0.name == p[0] && $0.url == p[1] }
+                    rows.append(old ?? Remote(name: p[0], url: p[1], ok: nil, note: "checking…"))
+                }
             }
             remotes = rows
             busy = false
@@ -134,6 +148,34 @@ final class GitModel: ObservableObject {
                 remotes[i].note = ok ? "connected" : String(out.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").first ?? "failed"
             }
         }
+    }
+
+    /// Cheap local-only pass: working tree, branch, HEAD and history.
+    private func refreshLocal() {
+        guard !lightRunning else { return }
+        lightRunning = true
+        let top = root
+        Task {
+            await loadLocal(top)
+            lightRunning = false
+        }
+    }
+
+    private func loadLocal(_ top: String) async {
+        async let st = Self.git(["status", "--porcelain=v1", "-b"], top)
+        async let log = Self.git(["log", "-40", "--pretty=format:%h%x09%s%x09%an%x09%ar"], top)
+        async let hd = Self.git(["rev-parse", "--short", "HEAD"], top)
+        let (s, l, h) = await (st, log, hd)
+        guard top == root else { return }      // switched repo meanwhile
+        if !s.hasPrefix("ERR") { parse(s) }
+        let newHead = h.hasPrefix("ERR") ? "" : h.trimmingCharacters(in: .whitespacesAndNewlines)
+        if newHead != head { head = newHead }
+        let cs = l.hasPrefix("ERR") ? [] : l.split(separator: "\n").compactMap { line -> Commit? in
+            let p = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            return p.count == 4 ? Commit(hash: p[0], subject: p[1], author: p[2], date: p[3]) : nil
+        }
+        if cs.map(\.hash) != commits.map(\.hash) || cs.first?.date != commits.first?.date { commits = cs }
+        updatedAt = Date()
     }
 
     private func parse(_ s: String) {
@@ -149,7 +191,7 @@ final class GitModel: ObservableObject {
                 fs.append(FileChange(code: String(line.prefix(2)).trimmingCharacters(in: .whitespaces), path: String(line.dropFirst(3))))
             }
         }
-        files = fs
+        if fs.map({ $0.code + $0.path }) != files.map({ $0.code + $0.path }) { files = fs }
     }
 
     func checksum(_ url: URL) {
@@ -220,7 +262,21 @@ struct GitPanel: View {
                 }
             } else {
                 Card(title: "Repository", icon: "folder") {
-                    Text(shortPath(g.root)).font(.system(size: 12, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                    HStack(spacing: 6) {
+                        Text(shortPath(g.root)).font(.system(size: 12, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 4)
+                        if g.busy { ProgressView().controlSize(.mini) }
+                        Button { g.refresh() } label: {
+                            Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
+                                .frame(width: 22, height: 22).background(Circle().fill(Color.white.opacity(0.08)))
+                        }.buttonStyle(.plain).help("Reload now (it also refreshes on its own every few seconds)")
+                    }
+                    if let t = g.updatedAt {
+                        TimelineView(.periodic(from: .now, by: 5)) { _ in
+                            Text("live · updated \(Int(-t.timeIntervalSinceNow))s ago")
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                        }
+                    }
                     HStack(spacing: 6) {
                         Pill(text: g.branch, icon: "arrow.triangle.branch", tint: m.claudeColor)
                         if !g.head.isEmpty { Pill(text: g.head, icon: "number", tint: .secondary) }
