@@ -15,7 +15,7 @@
   "claudeCommand": "claude",
   "permissionMode": "auto",
   "systemPrompt": "",
-  "modelRouter": {"enabled": true, "router": "haiku", "simple": "haiku", "medium": "sonnet", "complex": "opus", "fallback": "medium", "minChars": 40},
+  "modelRouter": {"enabled": true, "rules": true, "router": "haiku", "simple": "haiku", "medium": "sonnet", "complex": "opus", "fallback": "medium", "minChars": 40, "longChars": 1500, "cacheTTL": 86400, "escalate": true, "maxEscalations": 2, "words": {}},
   "terminal": "xdg-terminal-exec --app-id=org.omarchy.terminal",
 
   "sleepAfter": 600,

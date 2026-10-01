@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # Removes the agent notch plugin, backend and its Claude Code hooks.
+#   ./uninstall.sh [--name NAME]    defaults to the name it was installed with
 set -euo pipefail
-BIN="$HOME/.local/bin/myzk-agents"
+cd "$(dirname "$0")"
+. ./name.sh
+notch_name "$@"
+BIN="$HOME/.local/bin/$N-agents"
 
-rm -rf "$HOME/.config/omarchy/plugins/myzk.notch" "$BIN"
-python3 - "$HOME/.config/omarchy/shell.json" "$HOME/.claude/settings.json" "$BIN" <<'PY'
+rm -rf "$HOME/.config/omarchy/plugins/$N.notch" "$BIN"
+python3 - "$HOME/.config/omarchy/shell.json" "$HOME/.claude/settings.json" "$BIN" "$N.notch" <<'PY'
 import json, os, sys
-shell_json, settings, bin_path = sys.argv[1:]
+shell_json, settings, bin_path, plugin_id = sys.argv[1:]
 cmd = bin_path + " claude-hook"
 if os.path.exists(shell_json):
     s = json.load(open(shell_json))
-    s["plugins"] = [p for p in s.get("plugins", []) if p.get("id") != "myzk.notch"]
+    s["plugins"] = [p for p in s.get("plugins", []) if p.get("id") != plugin_id]
     json.dump(s, open(shell_json, "w"), indent=2)
 if os.path.exists(settings):
     c = json.load(open(settings))
@@ -23,5 +27,7 @@ if os.path.exists(settings):
             del hooks[event]
     json.dump(c, open(settings, "w"), indent=2)
 PY
+[ -n "${NOTCH_NO_RESTART:-}" ] && exit 0
+rm -f "$HOME/.local/bin/claude-usage" "$HOME/.local/bin/agent-notch-tools" "$NAME_FILE"
 command -v omarchy >/dev/null && omarchy restart shell || true
 echo "Agent notch removed. Your settings stay in ~/.config/agent-notch (delete it if you want)."
