@@ -9,6 +9,7 @@ myzk.notch overlay watches. Writers:
   myzk-agents set AGENT ID STATE [--name N] [--task T] [--detail D]
   myzk-agents rm AGENT ID
   myzk-agents ask PROMPT [--resume SID | --id NEW_UUID]   run Claude headless (notch input)
+  myzk-agents detect               JSON: which coding agents are installed on this machine
 
 Readers:
   myzk-agents list                 one-shot table
@@ -402,6 +403,77 @@ def watch():
         pass
 
 
+# ---------------------------------------------------------- detect agents
+
+# id, display name, executables, config dirs that show it has been used, macOS apps
+KNOWN_AGENTS = [
+    ("claude",   "Claude Code",        ["claude"],            ["~/.claude"],                          ["Claude.app"]),
+    ("codex",    "Codex",              ["codex"],             ["~/.codex"],                           ["Codex.app", "ChatGPT.app/Contents/Resources/codex-cli/bin/codex"]),
+    ("gemini",   "Gemini CLI",         ["gemini"],            ["~/.gemini"],                          []),
+    ("grok",     "Grok",               ["grok"],              ["~/.grok"],                            []),
+    ("opencode", "OpenCode",           ["opencode"],          ["~/.config/opencode", "~/.local/share/opencode"], []),
+    ("cursor",   "Cursor Agent",       ["cursor-agent"],      ["~/.cursor"],                          ["Cursor.app"]),
+    ("aider",    "Aider",              ["aider"],             ["~/.aider"],                           []),
+    ("amp",      "Amp",                ["amp"],               ["~/.config/amp"],                      []),
+    ("qwen",     "Qwen Code",          ["qwen"],              ["~/.qwen"],                            []),
+    ("goose",    "Goose",              ["goose"],             ["~/.config/goose"],                    []),
+    ("copilot",  "GitHub Copilot CLI", ["copilot"],           ["~/.copilot"],                         []),
+]
+
+
+def _search_dirs():
+    import glob
+    dirs = os.environ.get("PATH", "").split(os.pathsep)
+    home = os.path.expanduser("~")
+    dirs += [home + d for d in ("/.local/bin", "/.npm-global/bin", "/.bun/bin", "/.cargo/bin", "/.volta/bin",
+                                "/.local/share/mise/shims", "/.deno/bin")]
+    dirs += ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
+    dirs += glob.glob(home + "/.nvm/versions/node/*/bin")
+    seen, out = set(), []
+    for d in dirs:
+        if d and d not in seen and os.path.isdir(d):
+            seen.add(d)
+            out.append(d)
+    return out
+
+
+def _version(path):
+    try:
+        r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=3, stdin=subprocess.DEVNULL)
+        m = re.search(r"\d+\.\d+(?:\.\d+)?(?:[-+.\w]*)?", (r.stdout or r.stderr or ""))
+        return m.group(0) if m else ""
+    except Exception:
+        return ""
+
+
+def detect_agents():
+    from concurrent.futures import ThreadPoolExecutor
+    dirs = _search_dirs()
+    state = _load().get("agents", {}) if isinstance(_load(), dict) else {}
+    live = {a.get("agent") for a in state.values() if isinstance(a, dict)}
+    try:
+        settings = open(os.path.expanduser("~/.claude/settings.json")).read()
+    except OSError:
+        settings = ""
+
+    def probe(row):
+        aid, name, exes, cfgs, apps = row
+        path = next((os.path.join(d, e) for e in exes for d in dirs
+                     if os.access(os.path.join(d, e), os.X_OK) and not os.path.isdir(os.path.join(d, e))), "")
+        app = next((a for a in apps if os.path.exists("/Applications/" + a)), "")
+        used = any(os.path.exists(os.path.expanduser(c)) for c in cfgs)
+        if app and not path and app.endswith("codex"):
+            path = "/Applications/" + app          # bundled CLI inside another app
+            app = ""
+        installed = bool(path or app or used)     # a leftover config dir still means it was set up here
+        connected = ("myzk-agents" in settings) if aid == "claude" else (aid in live)
+        return {"id": aid, "name": name, "installed": installed, "path": path or ("/Applications/" + app if app else ""),
+                "version": _version(path) if path else "", "used": used, "connected": connected and installed}
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        return list(ex.map(probe, KNOWN_AGENTS))
+
+
 def main():
     args = sys.argv[1:]
     cmd = args[0] if args else "list"
@@ -415,6 +487,8 @@ def main():
         elif cmd == "ask" and len(args) >= 2:
             opts = dict(zip(args[2::2], args[3::2]))
             ask(args[1], opts.get("--resume"), opts.get("--id"))
+        elif cmd == "detect":
+            print(json.dumps(detect_agents()))
         elif cmd == "list":
             sys.stdout.write(render())
         elif (cmd == "set" and len(args) >= 4) or (cmd == "rm" and len(args) >= 3):

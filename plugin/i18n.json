@@ -79,7 +79,15 @@
     "custom.tap": "On tap",
     "custom.tap.chat": "Open chat",
     "custom.tap.terminal": "Open terminal",
-    "custom.tap.play": "Play"
+    "custom.tap.play": "Play",
+    "detect.button": "Agents",
+    "detect.title": "Agents on this Mac",
+    "detect.rescan": "Rescan",
+    "detect.connected": "Connected",
+    "detect.found": "Detected",
+    "detect.hint": "Detected, but not reporting to the notch yet",
+    "detect.notfound": "Not installed",
+    "detect.scanning": "Scanning…"
   },
   "es": {
     "state.idle": "en espera",
@@ -161,6 +169,14 @@
     "custom.tap": "Al tocar",
     "custom.tap.chat": "Abrir chat",
     "custom.tap.terminal": "Abrir terminal",
-    "custom.tap.play": "Jugar"
+    "custom.tap.play": "Jugar",
+    "detect.button": "Agentes",
+    "detect.title": "Agentes en este Mac",
+    "detect.rescan": "Volver a buscar",
+    "detect.connected": "Conectado",
+    "detect.found": "Detectado",
+    "detect.hint": "Detectado, pero aún no reporta al notch",
+    "detect.notfound": "No instalado",
+    "detect.scanning": "Buscando…"
   }
 }

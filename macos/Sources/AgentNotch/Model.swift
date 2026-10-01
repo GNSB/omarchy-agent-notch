@@ -49,6 +49,11 @@ struct Agent: Identifiable, Equatable {
     var id: String { key }
 }
 
+struct DetectedAgent: Identifiable, Equatable {
+    var id: String, name: String, path: String, version: String
+    var installed: Bool, connected: Bool
+}
+
 struct UsageInfo: Equatable {
     var sessionTokens = 0, sessionWindow = 0
     var sessionPct: Double?
@@ -56,7 +61,7 @@ struct UsageInfo: Equatable {
     var monthPct: Double?
 }
 
-enum Mode { case collapsed, expanded, alert, input, answer, custom }
+enum Mode { case collapsed, expanded, alert, input, answer, custom, detect }
 
 struct NotchGeometry {
     var notchW: CGFloat = 0
@@ -152,6 +157,9 @@ final class NotchModel: ObservableObject {
     @Published var customMood = "idle"
     @Published var reactions: [String: String] = [:]
     @Published var attachments: [String] = []
+    @Published var detectOpen = false
+    @Published var detecting = false
+    @Published var detected: [DetectedAgent] = []
     @Published var usage: UsageInfo?
     private var usageStamp = 0.0
     private var usageKey = "-"
@@ -357,6 +365,7 @@ final class NotchModel: ObservableObject {
 
     var mode: Mode {
         if customOpen { return .custom }
+        if detectOpen { return .detect }
         if inputOpen { return .input }
         if answerAgent != nil { return .answer }
         if hovered || pinned { return .expanded }
@@ -432,6 +441,7 @@ final class NotchModel: ObservableObject {
 
     func closeInput() { inputOpen = false; attachments = [] }
     func openCustom() {
+        detectOpen = false
         alertKey = ""; answerKey = ""; inputOpen = false
         customOpen = true; pinned = true
     }
@@ -473,7 +483,46 @@ final class NotchModel: ObservableObject {
         cfg.save("claudeColor", hex); cfgVersion += 1
     }
 
-    func closeAll() { customOpen = false; inputOpen = false; answerKey = ""; pinned = false; alertKey = "" }
+    func openDetect() {
+        alertKey = ""; answerKey = ""; inputOpen = false; customOpen = false
+        detectOpen = true; pinned = true
+        rescan()
+    }
+    func closeDetect() { detectOpen = false; pinned = false }
+
+    func rescan() {
+        guard !detecting else { return }
+        detecting = true
+        let backend = self.backend
+        Task.detached { [weak self] in
+            let rows = Self.runDetect(backend)
+            await self?.setDetected(rows)
+        }
+    }
+    private func setDetected(_ rows: [DetectedAgent]) { detected = rows; detecting = false }
+
+    nonisolated private static func runDetect(_ backend: String) -> [DetectedAgent] {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: backend)
+        p.arguments = ["detect"]
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = [home + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", env["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
+        p.environment = env
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return [] }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        let list = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] ?? []
+        return list.map { d in
+            DetectedAgent(id: d["id"] as? String ?? "", name: d["name"] as? String ?? "", path: d["path"] as? String ?? "",
+                          version: d["version"] as? String ?? "", installed: d["installed"] as? Bool ?? false,
+                          connected: d["connected"] as? Bool ?? false)
+        }
+    }
+
+    func closeAll() { detectOpen = false; customOpen = false; inputOpen = false; answerKey = ""; pinned = false; alertKey = "" }
     func toggle() { pinned.toggle(); if !pinned { pickedKey = "" } }
     func cycleDir() { askDirIndex = (askDirIndex + 1) % max(askDirs.count, 1) }
     var askDir: String { askDirs.indices.contains(askDirIndex) ? askDirs[askDirIndex] : "~" }

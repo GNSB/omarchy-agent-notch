@@ -32,6 +32,7 @@ struct NotchRoot: View {
         case .input: return 580
         case .answer: return 600
         case .custom: return 580
+        case .detect: return 580
         }
     }
 
@@ -46,6 +47,7 @@ struct NotchRoot: View {
             case .input: InputBody(m: m).transition(.opacity)
             case .answer: AnswerBody(m: m).transition(.opacity)
             case .custom: CustomBody(m: m).transition(.opacity)
+            case .detect: DetectBody(m: m).transition(.opacity)
             }
             if [.alert, .input, .answer].contains(m.mode) {
                 UsageCard(m: m).padding(.horizontal, 22).padding(.bottom, 12)
@@ -123,6 +125,12 @@ private struct ExpandedBody: View {
                         .frame(maxWidth: .infinity).padding(.vertical, 8)
                         .background(Capsule().fill(m.claudeColor.opacity(0.22)))
                         .foregroundStyle(m.claudeColor)
+                }.buttonStyle(.plain)
+                Button { m.openDetect() } label: {
+                    Text("⌕  " + m.tr("detect.button"))
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(Capsule().fill(Color.white.opacity(0.08)))
+                        .foregroundStyle(.secondary)
                 }.buttonStyle(.plain)
                 Button { m.openCustom() } label: {
                     Text(m.tr("custom.button"))
@@ -604,5 +612,78 @@ private struct CustomBody: View {
         .background(RoundedRectangle(cornerRadius: 18).fill(m.cardColor))
         .padding(.horizontal, 14).padding(.bottom, 14).padding(.top, 2)
         .onExitCommand { m.closeCustom() }
+    }
+}
+
+// MARK: - detect agents
+
+private struct DetectBody: View {
+    @ObservedObject var m: NotchModel
+
+    private var installed: [DetectedAgent] { m.detected.filter(\.installed) }
+    private var missing: [DetectedAgent] { m.detected.filter { !$0.installed } }
+
+    private func row(_ a: DetectedAgent) -> some View {
+        let tone = a.connected ? Color(hex: "#3DD68C") : Color(hex: "#F5B544")
+        return HStack(spacing: 10) {
+            Circle().fill(tone).frame(width: 8, height: 8).shadow(color: tone.opacity(0.6), radius: 4)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(a.name).font(.system(size: 13, weight: .semibold))
+                    if !a.version.isEmpty { Text("v" + a.version).font(.system(size: 10)).foregroundStyle(.secondary) }
+                }
+                Text(a.connected ? shortPath(a.path) : m.tr("detect.hint"))
+                    .font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.75)).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            Text(m.tr(a.connected ? "detect.connected" : "detect.found")).font(.system(size: 10, weight: .semibold))
+                .padding(.horizontal, 9).padding(.vertical, 3)
+                .background(Capsule().fill(tone.opacity(0.2))).foregroundStyle(tone)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.05)))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(m.tr("detect.title")).font(.system(size: 15, weight: .semibold))
+                    Text(m.detecting ? m.tr("detect.scanning") : "\(installed.count) / \(m.detected.count)")
+                        .font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.7))
+                }
+                Spacer()
+                Button { m.rescan() } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.clockwise").font(.system(size: 10, weight: .bold))
+                            .rotationEffect(.degrees(m.detecting ? 360 : 0))
+                            .animation(m.detecting ? .linear(duration: 0.9).repeatForever(autoreverses: false) : .default, value: m.detecting)
+                        Text(m.tr("detect.rescan")).font(.system(size: 11, weight: .medium))
+                    }
+                    .padding(.horizontal, 11).padding(.vertical, 6)
+                    .background(Capsule().fill(Color.white.opacity(0.09))).foregroundStyle(.primary).contentShape(Capsule())
+                }.buttonStyle(.plain)
+                Button { m.closeDetect() } label: {
+                    Text(m.tr("custom.done")).font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 16).padding(.vertical, 6)
+                        .background(Capsule().fill(m.claudeColor)).foregroundStyle(.white).contentShape(Capsule())
+                }.buttonStyle(.plain)
+            }
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 6) {
+                    ForEach(installed) { row($0) }
+                    if !missing.isEmpty {
+                        Text(m.tr("detect.notfound") + ":  " + missing.map(\.name).joined(separator: " · "))
+                            .font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.55))
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6).padding(.horizontal, 4)
+                    }
+                }
+            }
+            .frame(maxHeight: 250)
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 18).fill(m.cardColor))
+        .padding(.horizontal, 14).padding(.bottom, 14).padding(.top, 2)
+        .onExitCommand { m.closeDetect() }
     }
 }
