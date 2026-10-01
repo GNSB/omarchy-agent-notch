@@ -73,8 +73,8 @@
     "gear.shades": "Shades",
     "custom.style.dog": "Dog",
     "custom.style.hamster": "Hamster",
-    "usage.session": "Session context",
-    "usage.month": "This month",
+    "usage.session": "Context",
+    "usage.month": "Month",
     "usage.nearly": "Nearly full"
   },
   "es": {
@@ -151,8 +151,8 @@
     "gear.shades": "Gafas de sol",
     "custom.style.dog": "Perro",
     "custom.style.hamster": "Hámster",
-    "usage.session": "Contexto de la sesión",
-    "usage.month": "Este mes",
+    "usage.session": "Contexto",
+    "usage.month": "Mes",
     "usage.nearly": "Casi lleno"
   }
 }
