@@ -151,6 +151,7 @@ final class NotchModel: ObservableObject {
     @Published var customTarget = "claude"      // "claude" | "grok"
     @Published var customMood = "idle"
     @Published var reactions: [String: String] = [:]
+    @Published var attachments: [String] = []
     @Published var usage: UsageInfo?
     private var usageStamp = 0.0
     private var usageKey = "-"
@@ -412,7 +413,7 @@ final class NotchModel: ObservableObject {
         AppDelegate.shared?.makeKey()
     }
 
-    func closeInput() { inputOpen = false }
+    func closeInput() { inputOpen = false; attachments = [] }
     func openCustom() {
         alertKey = ""; answerKey = ""; inputOpen = false
         customOpen = true; pinned = true
@@ -473,8 +474,37 @@ final class NotchModel: ObservableObject {
         if a.source == "notch" && !a.answer.isEmpty { answerKey = a.key; AppDelegate.shared?.makeKey() }
     }
 
-    func send(_ text: String) {
+    // MARK: attachments (pasted images / copied image files)
+
+    private static let imageExts: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp"]
+
+    /// Returns true if the clipboard held something to attach (and so ⌘V shouldn't paste text).
+    func attachFromPasteboard() -> Bool {
+        let pb = NSPasteboard.general
+        let files = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? [])
+            .filter { Self.imageExts.contains($0.pathExtension.lowercased()) }
+        if !files.isEmpty { attachments += files.map(\.path); return true }
+        guard pb.string(forType: .string) == nil,
+              let img = NSImage(pasteboard: pb), let tiff = img.tiffRepresentation,
+              let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return false }
+        let dir = home + "/.local/state/myzk-agents/pastes"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = dir + "/paste-\(Int(Date().timeIntervalSince1970 * 1000)).png"
+        guard (try? png.write(to: URL(fileURLWithPath: path))) != nil else { return false }
+        attachments.append(path)
+        return true
+    }
+
+    private func withAttachments(_ text: String) -> String {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        defer { attachments = [] }
+        guard !attachments.isEmpty else { return t }
+        return (t.isEmpty ? "Look at the attached image(s)." : t) + "\n\n"
+            + attachments.map { "[attached image: \($0)]" }.joined(separator: "\n")
+    }
+
+    func send(_ text: String) {
+        let t = withAttachments(text)
         guard !t.isEmpty else { return }
         let id = UUID().uuidString.lowercased()
         let dir = (askDir as NSString).expandingTildeInPath
@@ -484,8 +514,9 @@ final class NotchModel: ObservableObject {
     }
 
     func reply(_ text: String) {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty, let a = answerAgent else { return }
+        guard let a = answerAgent else { return }
+        let t = withAttachments(text)
+        guard !t.isEmpty else { return }
         runBackend(["ask", t, "--resume", a.ident], cwd: a.cwd.isEmpty ? home : a.cwd)
     }
 

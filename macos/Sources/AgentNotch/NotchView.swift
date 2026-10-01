@@ -289,6 +289,28 @@ private struct AlertBody: View {
 
 // MARK: - ask input
 
+private struct AttachmentStrip: View {
+    @ObservedObject var m: NotchModel
+    var body: some View {
+        if !m.attachments.isEmpty {
+            HStack(spacing: 6) {
+                ForEach(m.attachments, id: \.self) { p in
+                    HStack(spacing: 5) {
+                        Image(systemName: "photo").font(.system(size: 10))
+                        Text((p as NSString).lastPathComponent).lineLimit(1).frame(maxWidth: 120)
+                        Button { m.attachments.removeAll { $0 == p } } label: { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)) }
+                            .buttonStyle(.plain)
+                    }
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Capsule().fill(Color.white.opacity(0.08)))
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+}
+
 private struct InputBody: View {
     @ObservedObject var m: NotchModel
     @State private var text = ""
@@ -305,6 +327,7 @@ private struct InputBody: View {
                     .onSubmit { m.send(text); text = "" }
                     .padding(.top, 10)
             }
+            AttachmentStrip(m: m)
             HStack {
                 Button { m.cycleDir() } label: {
                     Text("+  " + m.askDir).font(.system(size: 11)).foregroundStyle(.secondary)
@@ -363,6 +386,7 @@ private struct AnswerBody: View {
                     .font(.system(size: 13)).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 240)
+                AttachmentStrip(m: m)
                 HStack {
                     TextField(m.tr("answer.reply", ["name": m.assistantName]), text: $reply)
                         .textFieldStyle(.plain).focused($focused)

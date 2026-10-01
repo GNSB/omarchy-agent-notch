@@ -51,6 +51,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         AppDelegate.shared = self
         model.start()
+        installEditMenu()
+        installPasteMonitor()
 
         panel = NotchPanel(contentRect: NSRect(origin: .zero, size: panelSize),
                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -83,6 +85,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case "last": self.model.showLast()
                 default: break
                 }
+            }
+        }
+    }
+
+    /// An accessory app has no menu bar, and ⌘V/⌘C/⌘A/⌘Z are dispatched through the Edit
+    /// menu's key equivalents — without one, text fields can't paste, copy or undo.
+    private func installEditMenu() {
+        let main = NSMenu()
+        let appItem = NSMenuItem(); main.addItem(appItem)
+        let appMenu = NSMenu(); appItem.submenu = appMenu
+        appMenu.addItem(withTitle: "Quit Agent Notch", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let editItem = NSMenuItem(); main.addItem(editItem)
+        let edit = NSMenu(title: "Edit"); editItem.submenu = edit
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        NSApp.mainMenu = main
+    }
+
+    /// ⌘V with an image (or copied image files) on the clipboard attaches it instead of pasting.
+    /// Plain text falls through to the normal paste.
+    private func installPasteMonitor() {
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            let flags = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard flags == .command, e.charactersIgnoringModifiers == "v" else { return e }
+            return MainActor.assumeIsolated { () -> NSEvent? in
+                guard let self, self.model.mode == .input || self.model.mode == .answer else { return e }
+                return self.model.attachFromPasteboard() ? nil : e
             }
         }
     }
