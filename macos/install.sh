@@ -16,6 +16,7 @@ swift build -c release
 mkdir -p "$BIN" "$CONF"
 install -m 755 .build/release/AgentNotch "$BIN/agent-notch"
 install -m 755 "$ROOT/bin/myzk-agents" "$BIN/myzk-agents"
+install -m 755 "$ROOT/bin/claude-usage" "$BIN/claude-usage"
 cp "$ROOT/plugin/i18n.json" "$CONF/i18n.json"
 
 if [ ! -f "$CONF/config.json" ]; then

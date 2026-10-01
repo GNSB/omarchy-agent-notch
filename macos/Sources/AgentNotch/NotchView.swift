@@ -109,6 +109,7 @@ private struct ExpandedBody: View {
             } else {
                 Text(m.tr("cli.none")).foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 60)
             }
+            UsageCard(m: m)
             if m.agents.count > 1 {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 8)], spacing: 8) {
                     ForEach(m.agents) { a in Chip(m: m, a: a) }
@@ -130,6 +131,61 @@ private struct ExpandedBody: View {
             }
         }
         .padding(.horizontal, 14).padding(.bottom, 14).padding(.top, 2)
+    }
+}
+
+/// Context fill of the focused session + tokens used this month. Purely additive:
+/// hidden until claude-usage has answered once, and the month only gets a bar when
+/// `monthlyTokenBudget` is set in config.json (the CLI doesn't expose a monthly limit).
+private struct UsageCard: View {
+    @ObservedObject var m: NotchModel
+
+    private func tone(_ pct: Double) -> Color {
+        pct >= 90 ? Color(hex: "#FF4D4D") : pct >= 70 ? Color(hex: "#F5A524") : Color(hex: "#3DD68C")
+    }
+    private func fmt(_ n: Int) -> String {
+        n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1e6) : n >= 1000 ? "\(n / 1000)k" : "\(n)"
+    }
+
+    private func meter(_ title: String, _ value: String, _ frac: Double?, _ color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(title).font(.system(size: 11, weight: .medium))
+                Spacer()
+                Text(value).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+            }
+            if let frac {
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.08))
+                        Capsule().fill(color).frame(width: max(4, g.size.width * min(max(frac, 0), 1)))
+                    }
+                }
+                .frame(height: 5)
+                .animation(.spring(response: 0.5, dampingFraction: 0.9), value: frac)
+            }
+        }
+    }
+
+    var body: some View {
+        if let u = m.usage, u.sessionPct != nil || u.monthTokens > 0 {
+            VStack(spacing: 10) {
+                if let p = u.sessionPct {
+                    meter(m.tr("usage.session"), "\(fmt(u.sessionTokens)) / \(fmt(u.sessionWindow)) · \(Int(p))%", p / 100, tone(p))
+                }
+                if u.monthTokens > 0 {
+                    if let p = u.monthPct, u.monthBudget > 0 {
+                        meter(m.tr("usage.month"), "\(fmt(u.monthTokens)) / \(fmt(u.monthBudget)) · \(Int(p))%", p / 100, tone(p))
+                    } else {
+                        meter(m.tr("usage.month"), "\(fmt(u.monthTokens)) tokens", nil, .clear)
+                    }
+                }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 18).fill(m.cardColor))
+            .transition(.opacity)
+        }
     }
 }
 

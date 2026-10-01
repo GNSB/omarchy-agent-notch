@@ -49,6 +49,13 @@ struct Agent: Identifiable, Equatable {
     var id: String { key }
 }
 
+struct UsageInfo: Equatable {
+    var sessionTokens = 0, sessionWindow = 0
+    var sessionPct: Double?
+    var monthTokens = 0, monthBudget = 0
+    var monthPct: Double?
+}
+
 enum Mode { case collapsed, expanded, alert, input, answer, custom }
 
 struct NotchGeometry {
@@ -144,6 +151,10 @@ final class NotchModel: ObservableObject {
     @Published var customTarget = "claude"      // "claude" | "grok"
     @Published var customMood = "idle"
     @Published var reactions: [String: String] = [:]
+    @Published var usage: UsageInfo?
+    private var usageStamp = 0.0
+    private var usageKey = "-"
+    private let usageTool = home + "/.local/bin/claude-usage"
     private var pokes: [String: (count: Int, last: Date)] = [:]
     private var reactionTasks: [String: Task<Void, Never>] = [:]
     /// Size of the drawn notch, used by the window to decide which clicks fall through.
@@ -219,6 +230,49 @@ final class NotchModel: ObservableObject {
         pollState(force: false)
         let t = Date().timeIntervalSince1970
         if Int(t) != Int(now) { now = t }
+        if mode == .expanded { refreshUsageIfStale(t) }
+    }
+
+    // MARK: usage (context of the focused session + tokens this month)
+
+    private func refreshUsageIfStale(_ t: Double) {
+        let sid = (focus.flatMap { $0.agent == "claude" ? $0.ident : nil }) ?? ""
+        guard sid != usageKey || t - usageStamp > 20 else { return }
+        usageKey = sid
+        usageStamp = t
+        let tool = usageTool
+        Task.detached { [weak self] in
+            let info = Self.runUsage(tool, sid)
+            await self?.setUsage(info)
+        }
+    }
+
+    private func setUsage(_ info: UsageInfo?) { if let info { usage = info } }
+
+    nonisolated private static func runUsage(_ tool: String, _ sid: String) -> UsageInfo? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: tool)
+        p.arguments = sid.isEmpty ? [] : ["--session", sid]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        func n(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
+        var u = UsageInfo()
+        if let s = j["session"] as? [String: Any] {
+            u.sessionTokens = Int(n(s["tokens"]) ?? 0)
+            u.sessionWindow = Int(n(s["window"]) ?? 0)
+            u.sessionPct = n(s["pct"])
+        }
+        if let m = j["month"] as? [String: Any] {
+            u.monthTokens = Int(n(m["total"]) ?? 0)
+            u.monthBudget = Int(n(m["budget"]) ?? 0)
+            u.monthPct = n(m["pct"])
+        }
+        return u
     }
 
     private func pollState(force: Bool) {

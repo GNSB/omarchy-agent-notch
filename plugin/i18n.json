@@ -72,7 +72,10 @@
     "gear.glasses": "Glasses",
     "gear.shades": "Shades",
     "custom.style.dog": "Dog",
-    "custom.style.hamster": "Hamster"
+    "custom.style.hamster": "Hamster",
+    "usage.session": "Session context",
+    "usage.month": "This month",
+    "usage.nearly": "Nearly full"
   },
   "es": {
     "state.idle": "en espera",
@@ -147,6 +150,9 @@
     "gear.glasses": "Lentes",
     "gear.shades": "Gafas de sol",
     "custom.style.dog": "Perro",
-    "custom.style.hamster": "Hámster"
+    "custom.style.hamster": "Hámster",
+    "usage.session": "Contexto de la sesión",
+    "usage.month": "Este mes",
+    "usage.nearly": "Casi lleno"
   }
 }
