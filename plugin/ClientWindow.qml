@@ -48,9 +48,7 @@ Scope {
   readonly property string chatDir: current ? (current.cwd || "~") : (n ? n.askDir : "~")
 
   function short(p) { return n ? String(p || "").replace(n.home, "~") : p }
-  function clean(s) {
-    return String(s || "").split("\n").filter(function (l) { return l.indexOf("🔊") !== 0 }).join("\n")
-  }
+  function clean(s) { return n ? n.dropSpoken(s) : String(s || "") }
   // "[attached image: …]" lines → thumbnails; the rest is the message.
   function images(q) {
     return String(q || "").split("\n").filter(function (l) { return /^\[attached image: .*\]$/.test(l) })
@@ -73,7 +71,7 @@ Scope {
     onLoaded: { try { cw.turns = JSON.parse(text()) || [] } catch (e) { cw.turns = [] } }
     onLoadFailed: cw.turns = []
   }
-  onSelectedChanged: { if (selected === "") turns = []; follow() }
+  onSelectedChanged: { if (selected === "") turns = []; pendingPrompt = ""; follow() }
 
   // ------------------------------------------------------------ git model
   property var git: ({})               // agent-notch-tools git DIR
@@ -171,8 +169,8 @@ Scope {
     cw.sums = []
     cw.sumError = ""
     if (cw.sumFile === "") return
-    sumProc.command = [cw.tools, "checksum", cw.sumFile]
     sumProc.running = false
+    sumProc.command = [cw.tools, "checksum", cw.sumFile]
     sumProc.running = true
   }
   Process {
@@ -191,14 +189,19 @@ Scope {
   }
   Timer { id: focusLater; interval: 120; onTriggered: composerEdit.forceActiveFocus() }
 
+  // The backend echoes the sent prompt back as `task`, clipped to 90 chars for the
+  // sidebar/notch labels. Keep the full text here so the chat bubble doesn't show
+  // that clipped version while the reply is still in flight.
+  property string pendingPrompt: ""
+
   function submit() {
     var t = composerEdit.text
     if (t.trim() === "" && cw.n.attachments.length === 0) return
     if (cw.current) {
-      if (cw.n.replyTo(cw.current, t)) composerEdit.text = ""
+      if (cw.n.replyTo(cw.current, t)) { cw.pendingPrompt = t; composerEdit.text = "" }
     } else {
       var k = cw.n.startChat(t, cw.n.askAgent, cw.n.askDir)
-      if (k !== "") { composerEdit.text = ""; cw.selected = k }
+      if (k !== "") { composerEdit.text = ""; cw.selected = k; cw.pendingPrompt = t }
     }
   }
 
@@ -680,7 +683,7 @@ Scope {
                   AgentBubble { maxW: talkCol.width; body: cw.clean(modelData.a); error: !!modelData.error }
                 }
               }
-              UserBubble { maxW: talkCol.width; visible: cw.busy && !!cw.current && !!cw.current.task; q: cw.current ? cw.current.task : "" }
+              UserBubble { maxW: talkCol.width; visible: cw.busy && !!cw.current && !!cw.current.task; q: cw.pendingPrompt || (cw.current ? cw.current.task : "") }
               AgentBubble {
                 maxW: talkCol.width
                 visible: cw.busy

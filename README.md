@@ -7,6 +7,9 @@ straight from the notch.
 
 ▶️ **[Watch the demo](assets/demo.mp4)**
 
+<p align="center">
+  <img src="assets/collapsed.png" width="420" alt="Collapsed notch: your Claude orb on the left, other agents clustered on the right">
+</p>
 
 ## Which version?
 
@@ -35,13 +38,79 @@ Ctrl+V in the notch or the client attaches clipboard images; Esc closes the prom
 ## Features
 
 - **Collapsed**: an orb for your Claude session on the left, a 2×2 cluster of other agents on the right.
+
 - **Hover / click**: focus card with a step carousel + one chip per agent.
+
+  <img src="assets/focus-card.gif" width="420" alt="Hovering an agent chip opens a focus card with its current step">
+
 - **Alerts**: peeks open on its own when an agent is waiting for input, finishes or fails.
+
+  <img src="assets/alert.gif" width="420" alt="An alert peeking open on its own because an agent needs input">
+
+- **Done / error**: the card glows green and settles, or stays red and shaky until you look at it.
+
+  <img src="assets/done.gif" width="420" alt="An agent finishing, the card glowing green before it settles">
+
 - **Ask from the notch**: click the Claude orb → type a prompt → runs headless `claude -p`,
-  the answer renders in the notch (reply, or continue it in a terminal). `+` cycles the working dir over `~/Projects/*`.
+  the answer renders in the notch (reply, or continue it in a terminal). `+` cycles the working dir over
+  `~/Projects/*`; the composer also has per-message agent (Claude, Codex, Gemini CLI, Grok, OpenCode, GitHub
+  Copilot CLI…) and model pickers.
+
 - **Fully configurable**: language (en/es), names, colours, timings, monitor, project dirs — one JSON file, live-reloaded.
 - **Grok Bots** (optional): `myzk-agents mcp` is a stdio MCP server with a `report_status` tool.
 - Zero dependencies beyond Omarchy (Quickshell) or macOS, and `python3`.
+
+## Architecture
+
+One Python backend, two front-ends. Claude Code (or any script, or a Grok Bot over MCP) reports status,
+the backend keeps the board of agents and their state on disk, and each front-end polls/reads it over its
+platform's native IPC — no network, no daemon beyond what's already running.
+
+```mermaid
+flowchart LR
+    subgraph Sources["status sources"]
+        hooks["Claude Code hooks\n(~/.claude/settings.json)"]
+        scripts["any script\nmyzk-agents set ..."]
+        grok["Grok Bots\n(MCP report_status)"]
+    end
+
+    subgraph Backend["bin/myzk-agents  (Python)"]
+        cli["CLI: list · watch · set · rm\nroute · router-stats"]
+        mcp["mcp: stdio MCP server"]
+        state[("~/.local/state/myzk-agents\nboard · chats · router.jsonl")]
+        cfg[("~/.config/agent-notch\nconfig.json · name")]
+        router["model router\nrules → cache → haiku → fallback"]
+    end
+
+    subgraph Frontends["front-ends (pick one)"]
+        quickshell["Quickshell plugin\nplugin/*.qml  (Omarchy)"]
+        swiftui["SwiftUI app\nmacos/Sources  (macOS)"]
+    end
+
+    tools["bin/agent-notch-tools\n(git, checksums, clipboard)"]
+
+    hooks --> cli
+    scripts --> cli
+    grok --> mcp --> state
+    cli --> state
+    cli --> router
+    cli -. "claude -p (ask)" .-> router
+    state <-- "poll / live-reload" --> quickshell
+    state <-- "poll / live-reload" --> swiftui
+    cfg -. live-reloaded .-> quickshell
+    cfg -. live-reloaded .-> swiftui
+    quickshell -- "qs ipc call" --> tools
+    swiftui -- subprocess --> tools
+```
+
+- **Hooks** fire on Claude Code lifecycle events (tool use, stop, compaction…) and call `myzk-agents set` to
+  update an agent's state (`thinking|working|waiting|done|error`) and current task.
+- **State** is just files — a JSON board plus per-chat transcripts — so either front-end can read it without
+  talking to the other, and a restarted shell/app picks up exactly where it left off.
+- **The router** only runs for notch/client asks left on *Auto*; it classifies with free rules first and only
+  calls Haiku when unsure (see [Model routing](#model-routing)).
+- **`agent-notch-tools`** is a separate Python process the front-ends shell out to for anything that touches
+  `git`, hashes or the clipboard, so the UI layer stays dependency-free.
 
 ## Install
 

@@ -14,10 +14,14 @@ CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 command -v python3 >/dev/null || { echo "python3 is required"; exit 1; }
 [ -d "$HOME/.config/omarchy" ] || { echo "This needs Omarchy (~/.config/omarchy not found)"; exit 1; }
 
-# Renamed since the last install: drop the old plugin/backend/hooks, keep the state (chats, history).
+# Renamed since the last install: carry the state (chats, history) over now; the old
+# plugin/backend/hooks are only torn down at the very end, once the new name is fully
+# installed, so a failure midway leaves the old (working) install intact instead of
+# stranding you with neither.
+RENAMING=0
 if [ -n "$PREV" ] && [ "$PREV" != "$N" ]; then
+  RENAMING=1
   echo "→ renaming $PREV → $N"
-  NOTCH_NAME="$PREV" NOTCH_NO_RESTART=1 ./uninstall.sh >/dev/null
   STATE="${XDG_STATE_HOME:-$HOME/.local/state}"
   if [ -d "$STATE/$PREV-agents" ] && [ ! -e "$STATE/$N-agents" ]; then
     mv "$STATE/$PREV-agents" "$STATE/$N-agents"
@@ -88,6 +92,11 @@ for event in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
 save(settings, c)
 print("→ Claude Code hooks added to", settings)
 PY
+
+if [ "$RENAMING" = 1 ]; then
+  echo "→ dropping old install ($PREV)"
+  NOTCH_NAME="$PREV" NOTCH_NO_RESTART=1 ./uninstall.sh >/dev/null
+fi
 
 if command -v omarchy >/dev/null; then
   echo "→ restarting shell"

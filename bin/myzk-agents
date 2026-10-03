@@ -21,6 +21,7 @@ Nothing here connects agents to each other; it only records what each one
 says it is doing.
 """
 import fcntl
+import glob
 import json
 import os
 import re
@@ -123,13 +124,15 @@ def append_turn(agent, ident, prompt, answer, failed=False):
     """Full transcript of a notch chat, one file per chat (summary.json only keeps the last turn)."""
     os.makedirs(CHATS, exist_ok=True)
     path = _chat_file(f"{agent}:{ident}")
-    turns = _read_json(path) if os.path.exists(path) else []
-    turns = turns if isinstance(turns, list) else []
-    turns.append({"q": prompt, "a": answer, "t": time.time(), "error": bool(failed)})
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(turns[-200:], f, ensure_ascii=False)
-    os.replace(tmp, path)
+    with open(LOCK, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        turns = _read_json(path) if os.path.exists(path) else []
+        turns = turns if isinstance(turns, list) else []
+        turns.append({"q": prompt, "a": answer, "t": time.time(), "error": bool(failed)})
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(turns[-200:], f, ensure_ascii=False)
+        os.replace(tmp, path)
 
 
 def _save(agents):
@@ -145,13 +148,15 @@ def _save(agents):
     os.replace(tmp, SUMMARY)
 
 
-def update(agent, ident, state=None, remove=False, **fields):
+def update(agent, ident, state=None, remove=False, remove_unless_source=None, **fields):
     os.makedirs(STATE_DIR, exist_ok=True)
     with open(LOCK, "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         agents = _load()
         key = f"{agent}:{ident}"
         if remove:
+            if remove_unless_source is not None and agents.get(key, {}).get("source") == remove_unless_source:
+                return
             agents.pop(key, None)
             _drop_chat(key)
         else:
@@ -296,15 +301,76 @@ def _transcript_model(path):
     return ""
 
 
+def _transcript_answer(sid):
+    """Full assistant text of the last turn, reassembled from the session transcript.
+
+    `claude -p --output-format json`'s "result" field only reflects the final text block of
+    the turn: if the model writes its real answer, then calls a tool (e.g. a logging skill),
+    then closes with a short trailing line, "result" is just that trailing line — the answer
+    itself never makes it out. Reading the transcript directly recovers every text block the
+    assistant wrote after the last real user message, not just the last one.
+    """
+    paths = glob.glob(os.path.join(os.path.expanduser("~/.claude/projects/*"), sid + ".jsonl"))
+    if not paths:
+        return None
+    path = max(paths, key=os.path.getmtime)
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 1_000_000))
+            lines = f.read().decode("utf-8", "ignore").splitlines()
+    except OSError:
+        return None
+    records = []
+    for l in lines:
+        try:
+            records.append(json.loads(l))
+        except ValueError:
+            continue
+    # Walk back to the start of the last turn: the most recent *real* user message (not a
+    # tool_result bounce-back, which also has type "user" in the transcript).
+    start = 0
+    for i in range(len(records) - 1, -1, -1):
+        rec = records[i]
+        if rec.get("type") != "user":
+            continue
+        content = (rec.get("message") or {}).get("content")
+        if isinstance(content, str) or not any(
+                isinstance(c, dict) and c.get("type") == "tool_result" for c in (content or [])):
+            start = i + 1
+            break
+    texts = []
+    for rec in records[start:]:
+        if rec.get("type") != "assistant":
+            continue
+        for c in (rec.get("message") or {}).get("content") or []:
+            if isinstance(c, dict) and c.get("type") == "text" and c.get("text"):
+                texts.append(c["text"])
+    text = "\n\n".join(texts).strip()
+    return text or None
+
+
+def _proc_start(pid):
+    """Process start time (field 22 of /proc/<pid>/stat, ticks since boot): stable identity
+    for a PID, so a dead runner's PID being recycled isn't mistaken for the same process."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            # the 2nd field (comm) may contain spaces/parens, so split after its closing ")"
+            return f.read().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
 def _runner_alive(entry):
     pid = entry.get("runner") if entry.get("source") == "notch" else None
     if not pid:
         return False
     try:
         os.kill(int(pid), 0)
-        return True
     except (OSError, ValueError):
         return False
+    started = entry.get("runner_start")
+    return started is None or _proc_start(pid) == started
 
 
 def claude_hook():
@@ -326,8 +392,7 @@ def claude_hook():
 
     if kind == "SessionEnd":
         # Notch tasks outlive their process: the ask runner writes the answer.
-        if _load().get(f"claude:{sid}", {}).get("source") != "notch":
-            update("claude", sid, remove=True)
+        update("claude", sid, remove=True, remove_unless_source="notch")
     elif kind == "SessionStart":
         # /clear, compaction and resume play the "restart" look for a moment.
         if ev.get("source") in ("clear", "compact", "resume"):
@@ -655,7 +720,7 @@ def ask(prompt, resume=None, new_id=None, agent="claude", model=None):
     devnull = os.open(os.devnull, os.O_RDWR)
     for fd in (0, 1, 2):
         os.dup2(devnull, fd)
-    update("claude", sid, runner=os.getpid())
+    update("claude", sid, runner=os.getpid(), runner_start=_proc_start(os.getpid()))
 
     base = [_claude_bin(), "-p", prompt, "--output-format", "json",
             "--permission-mode", cfg("permissionMode", "auto"),
@@ -679,7 +744,10 @@ def ask(prompt, resume=None, new_id=None, agent="claude", model=None):
         # mise may print a banner first; the result is the last JSON line.
         line = next((l for l in reversed(out.stdout.splitlines()) if l.startswith("{")), "{}")
         data = json.loads(line)
-        answer = str(data.get("result") or "").strip() or tr("noAnswer")
+        # The transcript has every text block the assistant wrote this turn; "result" alone
+        # may only be the last one (see _transcript_answer).
+        answer = _transcript_answer(data.get("session_id") or run_id) \
+            or str(data.get("result") or "").strip() or tr("noAnswer")
         # Drop "🔊 …" spoken-summary lines (for TTS hooks), not for the card.
         answer = "\n".join(l for l in answer.splitlines() if not l.startswith("🔊")).strip() or answer
         failed = bool(data.get("is_error")) or out.returncode != 0 or not data
@@ -816,6 +884,7 @@ HEADLESS = {
     "goose":    ["goose", "run", "-t", "{prompt}"],
     "copilot":  ["copilot", "-p", "{prompt}"],
     "aider":    ["aider", "--message", "{prompt}", "--yes-always", "--no-pretty"],
+    "ollama":   ["ollama", "run", "qwen", "{prompt}"],
 }
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
@@ -942,6 +1011,7 @@ KNOWN_AGENTS = [
     ("qwen",     "Qwen Code",          ["qwen"],              ["~/.qwen"],                            []),
     ("goose",    "Goose",              ["goose"],             ["~/.config/goose"],                    []),
     ("copilot",  "GitHub Copilot CLI", ["copilot"],           ["~/.copilot"],                         []),
+    ("ollama",   "Ollama Local",       ["ollama"],            ["~/.ollama"],                          []),
 ]
 
 
