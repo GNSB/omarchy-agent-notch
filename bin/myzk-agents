@@ -884,6 +884,7 @@ HEADLESS = {
     "goose":    ["goose", "run", "-t", "{prompt}"],
     "copilot":  ["copilot", "-p", "{prompt}"],
     "aider":    ["aider", "--message", "{prompt}", "--yes-always", "--no-pretty"],
+    "ollama":   ["ollama", "run", "qwen", "{prompt}"],
 }
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
@@ -1010,6 +1011,7 @@ KNOWN_AGENTS = [
     ("qwen",     "Qwen Code",          ["qwen"],              ["~/.qwen"],                            []),
     ("goose",    "Goose",              ["goose"],             ["~/.config/goose"],                    []),
     ("copilot",  "GitHub Copilot CLI", ["copilot"],           ["~/.copilot"],                         []),
+    ("ollama",   "Ollama Local",       ["ollama"],            ["~/.ollama"],                          []),
 ]
 
 

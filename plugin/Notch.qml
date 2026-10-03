@@ -4,6 +4,7 @@ import QtQuick.Particles
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
+import Quickshell.Hyprland
 import qs.Commons
 
 // Grok-Bot-style notch hanging under the bar on the main screen.
@@ -383,6 +384,7 @@ Item {
   property bool grokOpen: false         // capsule unfolded
   property string mainClaudeKey: ""
   property var mainClaudeData: null
+  property bool isFullscreen: false
 
   readonly property string focusKey: pickedKey !== "" && indexOf(pickedKey) >= 0 ? pickedKey : primaryKey
   property var focusData: null
@@ -904,6 +906,33 @@ Item {
   Component.onCompleted: rescanLater.start()
   Timer { id: rescanLater; interval: 4000; onTriggered: root.rescan() }
 
+  // Hidden only for true fullscreen (mode 2, SUPER+F); maximized (mode 1, SUPER+ALT+F) keeps it.
+  Process {
+    id: fullscreenProc
+    command: ["bash", "-c",
+      'jq -n --argjson m "$(hyprctl monitors -j)" --argjson c "$(hyprctl clients -j)" --arg s "$1" '
+      + '\'[$m[] | select($s == "" or .name == $s) | .activeWorkspace.id] as $ids '
+      + '| any($c[]; .fullscreen == 2 and (.workspace.id as $i | $ids | index($i) != null))\'',
+      "fs", root.targetScreen ? root.targetScreen.name : ""]
+    stdout: StdioCollector {
+      onStreamFinished: root.isFullscreen = String(text).trim() === "true"
+    }
+  }
+  function checkFullscreen() {
+    if (fullscreenProc.running) fullscreenRecheck.restart()
+    else fullscreenProc.running = true
+  }
+  Timer { id: fullscreenRecheck; interval: 150; onTriggered: root.checkFullscreen() }
+  Connections {
+    target: Hyprland
+    function onRawEvent(event) {
+      if (["fullscreen", "workspace", "workspacev2", "focusedmon", "focusedmonv2", "openwindow",
+           "closewindow", "movewindow", "movewindowv2"].indexOf(event.name) >= 0)
+        root.checkFullscreen()
+    }
+  }
+  Timer { interval: 3000; running: true; repeat: true; onTriggered: root.checkFullscreen() }
+
   // Usage of whichever Claude session is in front, refreshed while the notch is open.
   Process {
     id: usageProc
@@ -1029,7 +1058,7 @@ Item {
   PanelWindow {
     id: win
     screen: root.targetScreen
-    visible: root.targetScreen !== null
+    visible: root.targetScreen !== null && !root.isFullscreen
 
     WlrLayershell.namespace: "myzk-notch"
     WlrLayershell.layer: WlrLayer.Overlay
